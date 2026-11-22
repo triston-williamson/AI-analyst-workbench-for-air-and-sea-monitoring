@@ -326,3 +326,63 @@ def test_click_off_script_ships_with_the_console():
 
     js = (Path(d.__file__).parent / "assets" / "map_click.js").read_text(encoding="utf-8")
     assert "clear-selection" in js and "Escape" in js
+
+
+# ---------------------------------------------------------------- AI reports panel
+REPORT_MD = """## Summary
+Two vessels moored [alert:x].
+
+## Observations
+- Stationary [rec:abc].
+
+## Assessment
+Could escalate if it were a transfer, but it is not.
+
+## Recommended action
+Monitor: check again at the next pass."""
+
+
+def test_report_action_reads_the_recommended_action_section_only():
+    from watchfloor.dashboard.app import report_action
+
+    assert report_action(REPORT_MD) == "monitor"  # not "escalate" from the Assessment
+    assert report_action("## Summary\nno action section") is None
+    assert report_action(None) is None
+
+
+def test_report_signature_changes_on_new_report_or_status():
+    from watchfloor.dashboard.app import report_signature
+
+    row = {"ALERT_ID": "a", "DRAFTED_AT": "2026-11-22T05:00:00Z", "STATUS": "NEW"}
+    assert report_signature([row]) == report_signature([dict(row)])
+    assert report_signature([row]) != report_signature([{**row, "STATUS": "APPROVED"}])
+    assert report_signature([]) == report_signature(None)
+
+
+def test_report_badge_only_on_alerts_with_a_report():
+    from watchfloor.dashboard.app import report_badge
+
+    assert report_badge({}, "a") == []
+    badge = report_badge({"a": "dismiss"}, "a")[0]
+    assert badge.children == "AI · dismiss" and "dismiss" in badge.className
+
+
+def test_report_item_shows_recommendation_and_opens_on_map():
+    from watchfloor.dashboard.app import report_item
+
+    r = {
+        "ALERT_ID": "a" * 36,
+        "DRAFTED_AT": "2026-11-22T05:00:00Z",
+        "MODEL": "claude-opus-5-5",
+        "DRAFT_MARKDOWN": REPORT_MD,
+        "GROUNDING_SCORE": 1.0,
+        "GROUNDING_PASSED": True,
+        "RULE": "RENDEZVOUS",
+        "TRACK_TYPE": "VESSEL",
+        "TRACK_ID": "1|2",
+        "STATUS": "NEW",
+        "details": {"vessel_names": ["RING", "ALBATROS"]},
+        "ACTION": "monitor",
+    }
+    text = json.dumps(report_item(r).to_plotly_json(), default=lambda o: o.to_plotly_json())
+    assert "RING + ALBATROS" in text and "MONITOR" in text and "report-open" in text

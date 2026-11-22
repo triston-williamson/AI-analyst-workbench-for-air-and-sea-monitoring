@@ -353,6 +353,33 @@ def build_layout() -> html.Div:
             html.Div(id="detail", className="detail"),
         ],
     )
+    reports_panel = html.Details(
+        className="reports",
+        open=True,
+        children=[
+            html.Summary(
+                [
+                    html.Span("AI REPORTS", id="reports-title"),
+                    html.Span(" · click a report to read it", className="audit"),
+                ]
+            ),
+            dcc.RadioItems(
+                id="report-filter",
+                options=[
+                    {"label": "All", "value": "all"},
+                    {"label": "Escalate", "value": "escalate"},
+                    {"label": "Monitor", "value": "monitor"},
+                    {"label": "Dismiss", "value": "dismiss"},
+                ],
+                value="all",
+                inline=True,
+                className="report-filter",
+            ),
+            html.Div(id="reports-list", className="reports-list"),
+        ],
+    )
+    # The first screen is the console (map + queue). The reports list sits below it: scroll
+    # down to read. The bottom banner sticks to the bottom of the window.
     return html.Div(
         className="console",
         children=[
@@ -367,7 +394,8 @@ def build_layout() -> html.Div:
             ),
             html.Div(id="health", className="health"),
             html.Div(className="body", children=[map_column, sidebar]),
-            html.Div(BANNER_TEXT, className="banner"),
+            reports_panel,
+            html.Div(BANNER_TEXT, className="banner bottom"),
             dcc.Store(id="live-data"),
             dcc.Store(id="alerts-data"),
             dcc.Store(id="selected-alert"),
@@ -377,6 +405,7 @@ def build_layout() -> html.Div:
             dcc.Store(id="report-tick", data=0),
             dcc.Store(id="zoom", data=figures.DEFAULT_ZOOM),
             dcc.Store(id="view"),
+            dcc.Store(id="reports-data"),
             dcc.Store(id="review-tick", data={"n": 0, "msg": ""}),
             dcc.Store(id="replay-bounds"),
             dcc.Store(id="replay-data"),
@@ -416,9 +445,11 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         Input("rule-filter", "value"),
         Input("status-filter", "value"),
         Input("selected-alert", "data"),
+        Input("reports-data", "data"),
     )
-    def render_queue(alerts, rules, status, selected):
+    def render_queue(alerts, rules, status, selected, reports):
         alerts = alerts or []
+        actions = {r["ALERT_ID"]: r["ACTION"] for r in reports or []}
         shown = [
             a
             for a in alerts
@@ -447,6 +478,7 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
                                 ),
                                 html.Span(
                                     [
+                                        *report_badge(actions, a["ALERT_ID"]),
                                         f"{a['SCORE']:.2f} ",
                                         html.Span(a["STATUS"], className=f"badge {a['STATUS']}"),
                                     ]
@@ -467,11 +499,12 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         Input({"type": "alert-card", "id": ALL}, "n_clicks"),
         Input("map", "clickData"),
         Input("clear-selection", "n_clicks"),
+        Input({"type": "report-open", "id": ALL}, "n_clicks"),
         State("selected-alert", "data"),
         State("selected-track", "data"),
         prevent_initial_call=True,
     )
-    def select(_cards, click, _clear, current_alert, current_track):
+    def select(_cards, click, _clear, _reports, current_alert, current_track):
         """Select an alert or track. Clicking what is already selected selects nothing.
 
         Clicking empty map or pressing Esc presses "Clear selection" (assets/map_click.js).
@@ -480,6 +513,8 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         value = ctx.triggered[0]["value"] if ctx.triggered else None
         if trig == "clear-selection":
             return (None, None) if value else (no_update, no_update)
+        if isinstance(trig, dict) and trig.get("type") == "report-open":
+            return (trig["id"], None) if value else (no_update, no_update)
         if isinstance(trig, dict) and trig.get("type") == "alert-card":
             if not value:
                 return no_update, no_update
@@ -556,6 +591,41 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         each zoom step and each 30 s refresh.
         """
         return view_update(relayout, view, current_zoom, trail)
+
+    # ---------------------------------------------------------------- AI reports
+    @app.callback(
+        Output("reports-data", "data"),
+        Input("tick", "n_intervals"),
+        Input("report-tick", "data"),
+        Input("review-tick", "data"),
+        State("reports-data", "data"),
+    )
+    def load_reports(_n, _report, _review, current):
+        """Latest report per alert. Re-sent only when a report or an alert's status changes,
+        so the 30 s refresh does not collapse a report someone is reading."""
+        try:
+            fresh = report_rows(data.all_reports())
+        except Exception:  # noqa: BLE001
+            log.exception("reports query failed")
+            return no_update
+        return no_update if report_signature(fresh) == report_signature(current) else fresh
+
+    @app.callback(
+        Output("reports-list", "children"),
+        Output("reports-title", "children"),
+        Input("reports-data", "data"),
+        Input("report-filter", "value"),
+    )
+    def render_reports(reports, action):
+        reports = reports or []
+        shown = [r for r in reports if action in (None, "all") or r["ACTION"] == action]
+        title = f"AI REPORTS · {len(reports)}"
+        if not reports:
+            msg = "No reports yet. Select an alert and press Draft AI report."
+            return html.Div(msg, className="empty"), title
+        if not shown:
+            return html.Div("No reports with this recommendation.", className="empty"), title
+        return [report_item(r) for r in shown], title
 
     # ---------------------------------------------------------------- replay
     @app.callback(
@@ -936,6 +1006,101 @@ def agent_configured() -> bool:
         return bool(client.api_key or getattr(client, "credentials", None))
     except Exception:  # noqa: BLE001 - any failure here just means "not configured"
         return False
+
+
+RECOMMENDATION = re.compile(r"#+\s*recommended action\s*\n(.*)", re.IGNORECASE | re.DOTALL)
+ACTION_WORD = re.compile(r"\b(escalate|monitor|dismiss)\b", re.IGNORECASE)
+
+
+def report_action(markdown: str | None) -> str | None:
+    """The agent's recommendation: the first dismiss / monitor / escalate in its
+    Recommended action section."""
+    m = RECOMMENDATION.search(markdown or "")
+    word = ACTION_WORD.search(m.group(1)) if m else None
+    return word.group(1).lower() if word else None
+
+
+def report_rows(df: pd.DataFrame) -> list[dict]:
+    rows = records(df)
+    for r in rows:
+        r["details"] = json.loads(r.pop("DETAILS") or "{}")
+        r["ACTION"] = report_action(r.get("DRAFT_MARKDOWN"))
+    return rows
+
+
+def report_signature(rows: list[dict] | None) -> list:
+    return [(r["ALERT_ID"], str(r["DRAFTED_AT"]), r.get("STATUS")) for r in rows or []]
+
+
+def report_badge(actions: dict, alert_id: str) -> list:
+    """Queue-card badge: this alert has an AI report, and what it recommends."""
+    if alert_id not in actions:
+        return []
+    action = actions[alert_id]
+    return [
+        html.Span(
+            f"AI · {action}" if action else "AI",
+            className=f"badge AI {action or ''}".strip(),
+            title="An AI analyst report exists for this alert (its recommendation shown)",
+        ),
+        " ",
+    ]
+
+
+def report_item(r: dict) -> html.Details:
+    """One report in the list under the map: a summary line that expands to the report."""
+    rule = r.get("RULE")
+    color = figures.RULE_COLORS.get(rule, "#fff")
+    who = alert_title(r) if r.get("TRACK_TYPE") else r["ALERT_ID"][:8]
+    passed = bool(r.get("GROUNDING_PASSED"))
+    action = r.get("ACTION")
+    summary = html.Summary(
+        [
+            html.Span(figures.RULE_LABELS.get(rule, rule or "Alert"), style={"color": color}),
+            html.Span(who, className="rep-who"),
+            html.Span(
+                (action or "no recommendation").upper(), className=f"badge AI {action or ''}"
+            ),
+            html.Span(r["STATUS"], className=f"badge {r['STATUS']}") if r.get("STATUS") else "",
+            html.Span(f"drafted {dtg(r['DRAFTED_AT'])}", className="audit"),
+        ]
+    )
+    grounding = html.Span(
+        f"Grounding {'PASSED' if passed else 'FAILED'} {float(r['GROUNDING_SCORE'] or 0):.2f}",
+        className=f"badge {'APPROVED' if passed else 'REJECTED'}",
+    )
+    return html.Details(
+        className="rep-item",
+        style={"borderLeftColor": color},
+        children=[
+            summary,
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            grounding,
+                            html.Span(f"  {r.get('MODEL') or ''}", className="audit"),
+                            html.Button(
+                                "Show on map",
+                                id={"type": "report-open", "id": r["ALERT_ID"]},
+                                className="btn ghost",
+                                style={"marginLeft": "auto", "padding": "3px 8px"},
+                            ),
+                        ],
+                        className="rep-head",
+                    ),
+                    dcc.Markdown(
+                        compact_citations(r.get("DRAFT_MARKDOWN") or ""), className="report"
+                    ),
+                    html.Div(
+                        "AI-drafted. Not final until an analyst approves the alert.",
+                        className="audit",
+                    ),
+                ],
+                className="rep-body",
+            ),
+        ],
+    )
 
 
 def report_section(a: dict) -> html.Div:
