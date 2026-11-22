@@ -98,6 +98,8 @@ BALTIC_PORTS: tuple[Port, ...] = (
     Port("Parnu", 58.38, 24.48),
     Port("Kronstadt", 59.99, 29.77, 5.0),
     Port("Kuressaare-Roomassaare", 58.23, 22.50, 4.0),
+    Port("Kapellskar", 59.72, 19.07),
+    Port("Hirtshals", 57.59, 9.96),
     # Kiel Canal: ships queue and pass at low speed along its whole length (inside the AOI).
     Port("Kiel Canal (west)", 54.17, 9.52, 6.0),
     Port("Kiel Canal (Rendsburg)", 54.30, 9.67, 6.0),

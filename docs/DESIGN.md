@@ -94,6 +94,9 @@ before it counts as finished work.
 | DET-10 | Exclude harbour/working craft (pilot, tug, SAR, fishing, pleasure, law enforcement) from LOITER, RENDEZVOUS and ML, but not from AIS_GAP | `tests/test_vessel_types.py` | Done |
 | DET-11 | Rank tanker-tanker rendezvous above other pairs (ship-to-ship oil transfer pattern) | `tests/test_vessel_types.py` | Done |
 | DET-12 | Vessel alerts carry self-reported name, type and IMO for the analyst | `tests/test_vessel_types.py` | Done |
+| DET-13 | RENDEZVOUS only between transfer-capable ships (class A, ≥ 50 m, non-passenger) alongside (≤ 0.15 nm); recurring berths suppressed | `tests/test_vessel_types.py`, live run (129 → 7) | Done |
+| DET-14 | Automated retraction never overrides a human review decision | `tests/test_vessel_types.py` | Done |
+| AUD-02 | Audit log stays a single valid chain with several concurrent writers; broken chains are archived and re-anchored, never edited | `tests/test_guardrails.py` | Done |
 | AGT-01 | Agent tools are read-only; the agent cannot change alert or report status | | Planned |
 | AGT-02 | Every factual sentence in a draft cites `[rec:<id>]` | `guardrails.grounding` | Checker done |
 | AGT-03 | Citations must reference records supplied to the agent; invented IDs fail | `tests/test_guardrails.py` | Checker done |
@@ -118,7 +121,7 @@ before it counts as finished work.
 |---|---|---|---|
 | AIS_GAP | Consecutive reports from one MMSI more than N apart; score = duration and displacement | gap ≥ 2 h | Terrestrial AIS coverage holes far offshore; vessels powering down alongside (port-suppressed) |
 | LOITER | Two-pointer scan: from each anchor point, extend while the track stays within R and reports keep arriving | R = 1 nm, ≥ 3 h | Ships waiting at anchorages outside port limits for a berth |
-| RENDEZVOUS | 10-minute time slots; spatial grid hash finds close pairs per slot (neighbours only, not all pairs); groups of more than 3 slow vessels are dropped as berths/anchorages; consecutive slots form an episode. Moored and fishing vessels excluded | ≤ 0.5 nm, ≤ 3 kts, ≥ 30 min, group ≤ 3 | Bunkering at designated areas; vessels not yet reporting static data |
+| RENDEZVOUS | 10-minute time slots; spatial grid hash finds close pairs per slot (neighbours only, not all pairs); groups of more than 3 slow vessels are dropped as berths/anchorages; consecutive slots form an episode. Only ships capable of a transfer: class A transponder, ≥ 50 m, not passenger, not moored/fishing. Spots where ≥ 4 different vessels pair up over time are dropped as berths. Tanker pairs +0.3, tanker alongside cargo +0.2, both identities unknown −0.2 | ≤ 0.15 nm (alongside), ≤ 3 kts, ≥ 30 min, group ≤ 3 | Legitimate bunkering; berths in inland waters (e.g. Lake Mälaren) |
 | ORBIT | Signed heading change summed over a sliding window, so S-turns cancel and only sustained circling accumulates | ≥ 720° in ≤ 45 min | Airport holding patterns, survey and training flights |
 | ML_ANOMALY | Isolation Forest over 8 kinematic features per track (speed mean/std/max, path length, straightness, turn rate, max report gap, report rate); robust z-scores name the top 3 drivers | top 10, ≥ 98th percentile, ≥ 30 tracks | Harbour craft (tugs, pilots), which move erratically by design |
 
@@ -142,6 +145,16 @@ before it counts as finished work.
   gets a +0.3 score boost. The type is self-reported and can be spoofed, so it adjusts what
   is flagged; it is never treated as proof. A vessel with no static data yet is treated as
   unknown and still checked.
+- **Tuning ship-to-ship detection on live data (detector v4).** After ~5 h, 129 RENDEZVOUS
+  alerts were open. Profiling them: 87 involved a vessel under 30 m, 43 a class B (small-craft)
+  transponder, and most large pairs were ferries at terminals or ships anchored ~0.4 nm apart.
+  A cargo transfer needs ocean-going ships moored *alongside*, so v4 requires class A, ≥ 50 m,
+  non-passenger vessels within 0.15 nm, and drops spots where four or more different vessels
+  rotate through (an unlisted berth). The AIS class is not a column: it is read from the raw
+  message kept on every row, which is why raw payloads are retained. **Result: 129 → 7.** The top
+  identified alert is a tanker 0.011 nm (~20 m) from a cargo ship outside Gothenburg, the exact
+  alongside pattern (probably routine bunkering, which is the analyst's call). Each rule is pinned
+  to the live case that motivated it by a regression test.
 - **Idempotency.** Detection re-scans a sliding window. An alert whose rule and track overlap an
   existing alert's time window updates that alert (score, evidence, window) instead of creating a
   duplicate. Only new alerts are written to the audit log.
@@ -167,6 +180,15 @@ before it counts as finished work.
   freshness alarm (no data lost: offsets are committed only after load, so it replayed from
   Kafka); the 30 s refresh wiped a half-typed review note; the went-dark trail lost its
   "after" leg to sub-second rounding; and a review message leaked onto the next alert.
+- **Audit chain fork (found by `verify_chain`).** Each process cached the last hash in memory,
+  so when the detector loop, a manual detector run and the console all appended, the chain
+  forked at line 789. Entries were intact; the link was wrong. Writes now take an OS file lock
+  and re-read the true last entry. The broken file was **archived unchanged** and a new chain
+  started whose first entry records the archived file, its last hash, the break line and the
+  cause; it was not "repaired" in place. The console reads history across both files.
+- **Automation must not overwrite people.** The v4 retraction flipped an analyst-REJECTED
+  alert to RETRACTED. Retraction now touches only unreviewed (NEW) alerts; the decision was
+  restored and the restore audited.
 
 ## 7. Responsible AI alignment
 

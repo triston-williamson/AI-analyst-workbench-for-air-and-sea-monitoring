@@ -88,7 +88,15 @@ def explain(a: dict) -> str:
             "meeting, or activity over undersea infrastructure."
         )
     if rule == "RENDEZVOUS":
-        lead = "TANKER PAIR. " if d.get("tanker_pair") else ""
+        lead = (
+            "TANKER PAIR. "
+            if d.get("tanker_pair")
+            else "TANKER ALONGSIDE CARGO SHIP. "
+            if d.get("tanker_alongside_cargo")
+            else ""
+        )
+        if d.get("identity_unknown"):
+            kind += " (neither vessel has broadcast its type or size)"
         return (
             f"{lead}Two vessels{kind} stayed within {d.get('min_separation_nm')} nm of each "
             f"other at low speed for {d.get('duration_minutes')} min away from port, the "

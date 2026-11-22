@@ -247,16 +247,18 @@ def health() -> dict:
 
 # --------------------------------------------------------------------------- audit history
 def audit_history(alert_id: str, path: str | None = None) -> list[dict]:
-    """Audit-log entries that mention this alert, oldest first."""
-    p = Path(path or get_settings().audit_log_path)
-    if not p.exists():
-        return []
+    """Audit-log entries that mention this alert, oldest first, across rotated chains."""
+    current = Path(path or get_settings().audit_log_path)
+    files = sorted(current.parent.glob(f"{current.stem}-*{current.suffix}")) + [current]
     out = []
-    with p.open(encoding="utf-8") as f:
-        for line in f:
-            if alert_id not in line:
-                continue
-            entry = json.loads(line)
-            if entry.get("details", {}).get("alert_id") == alert_id:
-                out.append(entry)
-    return out
+    for p in files:
+        if not p.exists():
+            continue
+        with p.open(encoding="utf-8") as f:
+            for line in f:
+                if alert_id not in line:
+                    continue
+                entry = json.loads(line)
+                if entry.get("details", {}).get("alert_id") == alert_id:
+                    out.append(entry)
+    return sorted(out, key=lambda e: e["ts"])

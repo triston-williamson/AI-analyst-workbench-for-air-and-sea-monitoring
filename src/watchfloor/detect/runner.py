@@ -43,8 +43,12 @@ log = logging.getLogger("detect")
 ALERT_NAMESPACE = uuid.UUID("6f1c2d1e-9a51-4c4e-8f0e-7c3b3c1a9e10")
 # v2: moored-status and crowd filters for RENDEZVOUS/LOITER, expanded port list.
 # v3: AIS ship type: service craft excluded from LOITER/RENDEZVOUS/ML; tanker pairs boosted.
-DETECTOR_VERSION = "3"
+# v4: RENDEZVOUS limited to ships capable of ship-to-ship transfer (class A, >= 50 m, not
+#     passenger) lying alongside (<= 0.15 nm). Tuned on 129 live v3 alerts; see DESIGN.md.
+DETECTOR_VERSION = "4"
 TANKER_PAIR_BOOST = 0.3
+TANKER_CARGO_BOOST = 0.2  # bunkering or cargo transfer alongside a cargo ship
+UNKNOWN_IDENTITY_PENALTY = 0.2  # neither vessel has ever said what it is: less to go on
 STORM_LIMIT = 50
 
 
@@ -55,7 +59,10 @@ class Thresholds:
     ais_gap: timedelta = timedelta(hours=2)
     loiter_radius_nm: float = 1.0
     loiter_min: timedelta = timedelta(hours=3)
-    rendezvous_distance_nm: float = 0.5
+    # Ships transferring cargo are moored alongside: antenna-to-antenna well under 0.15 nm.
+    # At 0.5 nm (v3) neighbours in an anchorage alerted too.
+    rendezvous_distance_nm: float = 0.15
+    sts_min_length_m: float = 50.0
     rendezvous_max_speed_kts: float = 3.0
     rendezvous_min: timedelta = timedelta(minutes=30)
     orbit_min_turn_deg: float = 720.0
@@ -64,21 +71,24 @@ class Thresholds:
 
 VESSEL_SQL = """
 SELECT RECORD_ID, TO_VARCHAR(MMSI) AS TRACK_ID, OBSERVED_AT, LAT, LON, SPEED_KTS, COURSE_DEG,
-       NAV_STATUS
+       NAV_STATUS,
+       -- AIS class isn't a column, but the raw message kept on every row says which report
+       -- type it was: class B position reports come only from small (non-SOLAS) craft.
+       IFF(RAW_PAYLOAD ILIKE '%%StandardClassBPositionReport%%', 'B', 'A') AS AIS_CLASS
 FROM RAW.VESSEL_POSITIONS
 WHERE OBSERVED_AT > DATEADD(hour, -%(hours)s, CURRENT_TIMESTAMP())
 QUALIFY ROW_NUMBER() OVER (PARTITION BY RECORD_ID ORDER BY LOADED_AT) = 1
 """
 AIRCRAFT_SQL = """
 SELECT RECORD_ID, ICAO24 AS TRACK_ID, OBSERVED_AT, LAT, LON, SPEED_KTS, COURSE_DEG,
-       NULL AS NAV_STATUS
+       NULL AS NAV_STATUS, NULL AS AIS_CLASS
 FROM RAW.AIRCRAFT_POSITIONS
 WHERE OBSERVED_AT > DATEADD(hour, -%(hours)s, CURRENT_TIMESTAMP())
   AND NOT ON_GROUND
 QUALIFY ROW_NUMBER() OVER (PARTITION BY RECORD_ID ORDER BY LOADED_AT) = 1
 """
 IDENTITY_SQL = """
-SELECT TO_VARCHAR(MMSI), SHIP_TYPE, SHIP_NAME, IMO
+SELECT TO_VARCHAR(MMSI), SHIP_TYPE, SHIP_NAME, IMO, LENGTH_M
 FROM CORE.VESSEL_IDENTITY
 """
 EXISTING_SQL = """
@@ -113,7 +123,7 @@ UPDATE OPS.ALERTS
 SET STATUS = 'RETRACTED', UPDATED_AT = CURRENT_TIMESTAMP(),
     DETAILS = OBJECT_INSERT(DETAILS, 'retracted_reason', %(reason)s, TRUE)
 WHERE RULE = %(rule)s
-  AND STATUS <> 'RETRACTED'
+  AND STATUS = 'NEW'  -- never override a human decision (APPROVED / REJECTED)
   AND COALESCE(DETAILS:detector_version::STRING, '1') <> %(version)s
 """
 
@@ -130,6 +140,7 @@ def load_points(cur, sql: str, hours: int) -> list[Point]:
             speed_kts=r[5],
             course_deg=r[6],
             nav_status=r[7],
+            ais_class=r[8],
         )
         for r in rows
     ]
@@ -140,11 +151,12 @@ class Identity:
     ship_type: int | None
     name: str | None = None
     imo: int | None = None
+    length_m: float | None = None
 
 
 def load_identities(cur) -> dict[str, Identity]:
     return {
-        r[0]: Identity(ship_type=r[1], name=r[2], imo=r[3])
+        r[0]: Identity(ship_type=r[1], name=r[2], imo=r[3], length_m=r[4])
         for r in cur.execute(IDENTITY_SQL).fetchall()
     }
 
@@ -170,13 +182,54 @@ def enrich(alert: Alert, identities: dict[str, Identity]) -> Alert:
         (identities[m].name if m in identities and identities[m].name else f"MMSI {m}")
         for m in mmsis
     ]
+    lengths = [identities[m].length_m if m in identities else None for m in mmsis]
+    if any(lengths):
+        alert.details["vessel_lengths_m"] = lengths
     imos = [identities[m].imo for m in mmsis if m in identities and identities[m].imo]
     if imos:
         alert.details["imo_numbers"] = imos
-    if alert.rule == "RENDEZVOUS" and all(ship_types.is_tanker(t) for t in types):
-        alert.details["tanker_pair"] = True
-        alert.score = round(min(1.0, alert.score + TANKER_PAIR_BOOST), 3)
+    if alert.rule == "RENDEZVOUS":
+        if all(ship_types.is_tanker(t) for t in types):
+            alert.details["tanker_pair"] = True
+            alert.score = round(min(1.0, alert.score + TANKER_PAIR_BOOST), 3)
+        elif any(ship_types.is_tanker(t) for t in types) and all(
+            ship_types.is_cargo_or_tanker(t) for t in types
+        ):
+            alert.details["tanker_alongside_cargo"] = True
+            alert.score = round(min(1.0, alert.score + TANKER_CARGO_BOOST), 3)
+        elif all(m not in identities for m in mmsis):
+            alert.details["identity_unknown"] = True
+            alert.score = round(max(0.1, alert.score - UNKNOWN_IDENTITY_PENALTY), 3)
     return alert
+
+
+def track_classes(points: list[Point]) -> dict[str, str]:
+    """Most frequently reported AIS class per track."""
+    counts: dict[str, dict[str, int]] = {}
+    for p in points:
+        if p.ais_class:
+            c = counts.setdefault(p.track_id, {})
+            c[p.ais_class] = c.get(p.ais_class, 0) + 1
+    return {tid: max(c, key=c.get) for tid, c in counts.items()}
+
+
+def sts_capable(
+    mmsi: str, identities: dict[str, Identity], classes: dict[str, str], min_length_m: float
+) -> bool:
+    """Could this vessel take part in a ship-to-ship cargo transfer?
+
+    Needs an ocean-going ship: a class A transponder (mandatory for SOLAS ships; class B is
+    small craft), not a ferry, and at least ``min_length_m`` long when the length is known.
+    Unknown type/length stays in scope, so a vessel can't evade by not broadcasting it.
+    """
+    if classes.get(mmsi) == "B":
+        return False
+    ident = identities.get(mmsi)
+    if ident is None:
+        return True
+    if ship_types.is_passenger(ident.ship_type):
+        return False
+    return not (ident.length_m and ident.length_m < min_length_m)
 
 
 def detect(
@@ -197,13 +250,20 @@ def detect(
     alerts += rules.find_loitering(
         working, radius_nm=t.loiter_radius_nm, min_duration=t.loiter_min, in_port=in_port
     )
+    classes = track_classes(vessels)
+    capable = {
+        m
+        for m in {p.track_id for p in working}
+        if sts_capable(m, identities, classes, t.sts_min_length_m)
+    }
     alerts += rules.find_rendezvous(
-        working,
+        [p for p in working if p.track_id in capable],
         max_distance_nm=t.rendezvous_distance_nm,
         max_speed_kts=t.rendezvous_max_speed_kts,
         min_duration=t.rendezvous_min,
         in_port=in_port,
     )
+    alerts, _ = rules.suppress_recurring_spots(alerts)
     alerts += rules.find_orbits(aircraft, min_turn_deg=t.orbit_min_turn_deg)
     alerts += ml.score_tracks(working, "VESSEL", top_k=t.ml_top_k)
     alerts += ml.score_tracks(aircraft, "AIRCRAFT", top_k=t.ml_top_k)

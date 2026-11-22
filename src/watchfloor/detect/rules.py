@@ -40,6 +40,7 @@ class Point:
     speed_kts: float | None = None
     course_deg: float | None = None
     nav_status: int | None = None  # AIS navigational status; 5 = moored
+    ais_class: str | None = None  # "A" (SOLAS ships) or "B" (small craft), from the raw message
 
 
 NAV_MOORED = 5
@@ -323,6 +324,36 @@ def find_rendezvous(
             if ev is not None:
                 run = [ev]
     return alerts
+
+
+def suppress_recurring_spots(
+    alerts: list[Alert], radius_nm: float = 0.25, min_vessels: int = 4
+) -> tuple[list[Alert], int]:
+    """Drop RENDEZVOUS alerts at spots where many *different* vessels keep pairing up.
+
+    A ship-to-ship transfer is one pair (sometimes three hulls) at one time. A berth or
+    anchorage that is missing from the port list shows a different signature over hours:
+    vessels rotate through, so the same spot produces pairs with four or more distinct ships.
+    Returns (kept alerts, number suppressed).
+    """
+    rdv = [a for a in alerts if a.rule == "RENDEZVOUS" and a.lat is not None]
+    other = [a for a in alerts if a not in rdv]
+    clusters: list[list[Alert]] = []
+    for a in rdv:
+        for cl in clusters:
+            if haversine_nm(a.lat, a.lon, cl[0].lat, cl[0].lon) <= radius_nm:
+                cl.append(a)
+                break
+        else:
+            clusters.append([a])
+    kept, dropped = [], 0
+    for cl in clusters:
+        vessels = {m for a in cl for m in a.track_id.split("|")}
+        if len(vessels) >= min_vessels:
+            dropped += len(cl)
+        else:
+            kept += cl
+    return other + kept, dropped
 
 
 # --------------------------------------------------------------------------- DET-04 orbits

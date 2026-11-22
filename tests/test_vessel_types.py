@@ -169,3 +169,95 @@ def test_names_and_types_stay_aligned_when_one_vessel_unknown():
     enrich(a, {"222222222": Identity(52, "TUG")})
     assert a.details["vessel_names"] == ["MMSI 111111111", "TUG"]
     assert a.details["vessel_types"] == ["Unknown", "Tug"]
+
+
+# ---------------------------------------------------------------- v4 STS tuning
+# Tuned on 129 live v3 RENDEZVOUS alerts: 87 involved a vessel under 30 m, 43 a class B
+# transponder, and most large pairs were ferries or ships anchored ~0.4 nm apart.
+from watchfloor.detect.rules import Point, suppress_recurring_spots  # noqa: E402
+from watchfloor.detect.runner import sts_capable, track_classes  # noqa: E402
+
+
+def with_class(pts, cls):
+    return [
+        Point(
+            p.record_id,
+            p.track_id,
+            p.observed_at,
+            p.lat,
+            p.lon,
+            p.speed_kts,
+            p.course_deg,
+            p.nav_status,
+            cls,
+        )
+        for p in pts
+    ]
+
+
+@pytest.mark.parametrize(
+    ("ident", "cls", "expected"),
+    [
+        (Identity(80, "TANKER", length_m=180), "A", True),
+        (None, "A", True),  # unknown identity stays in scope: can't evade by staying silent
+        (Identity(80, "TANKER", length_m=180), "B", False),  # class B = small craft
+        (Identity(37, "YACHT", length_m=12), "A", False),  # too small
+        (Identity(60, "FERRY", length_m=150), "A", False),  # ferries berth side by side
+        (Identity(79, "COASTER", length_m=None), "A", True),
+    ],
+)
+def test_sts_capable(ident, cls, expected):
+    ids = {"1": ident} if ident else {}
+    assert sts_capable("1", ids, {"1": cls}, 50.0) is expected
+
+
+def test_track_class_is_majority_vote():
+    pts = with_class(drift("1", OPEN_SEA, hours=1), "A")
+    pts[0] = with_class([pts[0]], "B")[0]
+    assert track_classes(pts) == {"1": "A"}
+
+
+def test_small_craft_alongside_are_not_rendezvous():
+    pts = with_class(pair("265000001", "265000002"), "B")
+    assert [a.rule for a in detect(pts, [], Thresholds(), {})].count("RENDEZVOUS") == 0
+
+
+def test_ships_anchored_apart_are_not_rendezvous():
+    a = drift("273000001", OPEN_SEA, hours=1, step_min=5, speed=0.5, seed=1)
+    b = drift(
+        "273000002", (OPEN_SEA[0] + 0.006, OPEN_SEA[1]), hours=1, step_min=5, speed=0.5, seed=2
+    )  # ~0.36 nm apart: anchorage neighbours (alerted under v3's 0.5 nm)
+    assert [x.rule for x in detect(a + b, [], Thresholds(), {})].count("RENDEZVOUS") == 0
+
+
+def test_recurring_spot_with_rotating_vessels_is_suppressed():
+    def rdv(a, b, lat=57.0):
+        return Alert(
+            "RENDEZVOUS", "VESSEL", f"{a}|{b}", 0.5, [], lat=lat, lon=19.0, start_at=T0, end_at=T0
+        )
+
+    berth = [rdv("1", "2"), rdv("2", "3"), rdv("3", "4")]  # four ships rotate through
+    sts = [rdv("8", "9", lat=58.0)]  # one pair elsewhere
+    kept, dropped = suppress_recurring_spots(berth + sts)
+    assert dropped == 3 and [a.track_id for a in kept] == ["8|9"]
+
+
+def test_tanker_alongside_cargo_outranks_unidentified_pair():
+    pts = pair("273000001", "273000002")
+    known = {
+        "273000001": Identity(80, "TANKER", length_m=80),
+        "273000002": Identity(70, "CARGO", length_m=108),
+    }
+    tc = [a for a in detect(pts, [], Thresholds(), known) if a.rule == "RENDEZVOUS"][0]
+    # Identity table populated (as in production), but neither of these two vessels is in it.
+    others = {"999999999": Identity(70, "SOMEONE ELSE")}
+    unk = [a for a in detect(pts, [], Thresholds(), others) if a.rule == "RENDEZVOUS"][0]
+    assert tc.details["tanker_alongside_cargo"] and unk.details["identity_unknown"]
+    assert tc.score > unk.score
+
+
+def test_retraction_never_overrides_a_human_decision():
+    """Regression: the v4 retraction flipped an analyst-REJECTED alert to RETRACTED."""
+    from watchfloor.detect.runner import RETRACT_SQL
+
+    assert "STATUS = 'NEW'" in RETRACT_SQL
