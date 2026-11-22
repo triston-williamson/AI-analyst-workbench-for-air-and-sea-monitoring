@@ -3,10 +3,19 @@
     python -m watchfloor.detect.runner --once            # one pass over the last 24 h
     python -m watchfloor.detect.runner --interval 300    # every 5 minutes
     python -m watchfloor.detect.runner --once --dry-run  # print alerts, write nothing
+    python -m watchfloor.detect.runner --retract-rule RENDEZVOUS --reason "..."
 
 Idempotency: each run re-scans a sliding window, so the same episode is seen many times. A new
 alert whose rule + track overlaps an existing alert's time window *updates* that alert (extends
 its window, refreshes score/evidence) instead of creating a duplicate.
+
+Versioning: every alert records the DETECTOR_VERSION that produced it. When a detector is fixed,
+alerts from older versions can be retracted (status RETRACTED, reason kept, nothing deleted).
+
+Storm guard: if one rule would create more than STORM_LIMIT new alerts in a single pass, that is
+almost always a detector fault (e.g. an unknown harbour), not dozens of real incidents. The
+rule's new alerts are held back and the event is logged and audited instead of flooding the
+analyst queue.
 """
 
 from __future__ import annotations
@@ -19,6 +28,9 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+import pandas as pd
+from snowflake.connector.pandas_tools import write_pandas
+
 from watchfloor.config import get_settings
 from watchfloor.detect import ml, rules
 from watchfloor.detect.ports import in_port
@@ -29,6 +41,9 @@ from watchfloor.load.snowflake_conn import connect
 log = logging.getLogger("detect")
 
 ALERT_NAMESPACE = uuid.UUID("6f1c2d1e-9a51-4c4e-8f0e-7c3b3c1a9e10")
+# v2: moored-status and crowd filters for RENDEZVOUS/LOITER, expanded port list.
+DETECTOR_VERSION = "2"
+STORM_LIMIT = 50
 
 
 @dataclass(frozen=True)
@@ -46,13 +61,15 @@ class Thresholds:
 
 
 VESSEL_SQL = """
-SELECT RECORD_ID, TO_VARCHAR(MMSI) AS TRACK_ID, OBSERVED_AT, LAT, LON, SPEED_KTS, COURSE_DEG
+SELECT RECORD_ID, TO_VARCHAR(MMSI) AS TRACK_ID, OBSERVED_AT, LAT, LON, SPEED_KTS, COURSE_DEG,
+       NAV_STATUS
 FROM RAW.VESSEL_POSITIONS
 WHERE OBSERVED_AT > DATEADD(hour, -%(hours)s, CURRENT_TIMESTAMP())
 QUALIFY ROW_NUMBER() OVER (PARTITION BY RECORD_ID ORDER BY LOADED_AT) = 1
 """
 AIRCRAFT_SQL = """
-SELECT RECORD_ID, ICAO24 AS TRACK_ID, OBSERVED_AT, LAT, LON, SPEED_KTS, COURSE_DEG
+SELECT RECORD_ID, ICAO24 AS TRACK_ID, OBSERVED_AT, LAT, LON, SPEED_KTS, COURSE_DEG,
+       NULL AS NAV_STATUS
 FROM RAW.AIRCRAFT_POSITIONS
 WHERE OBSERVED_AT > DATEADD(hour, -%(hours)s, CURRENT_TIMESTAMP())
   AND NOT ON_GROUND
@@ -62,22 +79,36 @@ EXISTING_SQL = """
 SELECT ALERT_ID, RULE, TRACK_ID, START_AT, END_AT
 FROM OPS.ALERTS
 WHERE COALESCE(END_AT, DETECTED_AT) > DATEADD(hour, -%(hours)s, CURRENT_TIMESTAMP())
+  AND STATUS <> 'RETRACTED'
 """
-INSERT_SQL = """
+# Alerts are staged with write_pandas (one bulk load), then applied with two set-based
+# statements, instead of one round trip per alert (~0.35 s each).
+STAGE_TABLE = "ALERTS_STAGE"  # also hard-coded in the two SQL strings below
+APPLY_UPDATES_SQL = """
+UPDATE OPS.ALERTS a SET
+  UPDATED_AT = CURRENT_TIMESTAMP(), SCORE = GREATEST(a.SCORE, s.SCORE),
+  EVIDENCE_IDS = PARSE_JSON(s.EVIDENCE_JSON)::ARRAY, DETAILS = PARSE_JSON(s.DETAILS_JSON),
+  LAT = s.LAT, LON = s.LON,
+  START_AT = LEAST(a.START_AT, s.START_AT), END_AT = GREATEST(a.END_AT, s.END_AT)
+FROM OPS.ALERTS_STAGE s
+WHERE a.ALERT_ID = s.ALERT_ID AND NOT s.IS_NEW
+"""
+APPLY_INSERTS_SQL = """
 INSERT INTO OPS.ALERTS (ALERT_ID, DETECTED_AT, UPDATED_AT, RULE, TRACK_TYPE, TRACK_ID, SCORE,
                         EVIDENCE_IDS, DETAILS, LAT, LON, START_AT, END_AT, STATUS)
-SELECT %(alert_id)s, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), %(rule)s, %(track_type)s,
-       %(track_id)s, %(score)s, PARSE_JSON(%(evidence)s)::ARRAY, PARSE_JSON(%(details)s),
-       %(lat)s, %(lon)s, %(start_at)s::TIMESTAMP_TZ, %(end_at)s::TIMESTAMP_TZ, 'NEW'
+SELECT ALERT_ID, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(), RULE, TRACK_TYPE, TRACK_ID, SCORE,
+       PARSE_JSON(EVIDENCE_JSON)::ARRAY, PARSE_JSON(DETAILS_JSON), LAT, LON, START_AT, END_AT,
+       'NEW'
+FROM OPS.ALERTS_STAGE
+WHERE IS_NEW
 """
-UPDATE_SQL = """
-UPDATE OPS.ALERTS SET
-  UPDATED_AT = CURRENT_TIMESTAMP(), SCORE = GREATEST(SCORE, %(score)s),
-  EVIDENCE_IDS = PARSE_JSON(%(evidence)s)::ARRAY, DETAILS = PARSE_JSON(%(details)s),
-  LAT = %(lat)s, LON = %(lon)s,
-  START_AT = LEAST(START_AT, %(start_at)s::TIMESTAMP_TZ),
-  END_AT = GREATEST(END_AT, %(end_at)s::TIMESTAMP_TZ)
-WHERE ALERT_ID = %(alert_id)s
+RETRACT_SQL = """
+UPDATE OPS.ALERTS
+SET STATUS = 'RETRACTED', UPDATED_AT = CURRENT_TIMESTAMP(),
+    DETAILS = OBJECT_INSERT(DETAILS, 'retracted_reason', %(reason)s, TRUE)
+WHERE RULE = %(rule)s
+  AND STATUS <> 'RETRACTED'
+  AND COALESCE(DETAILS:detector_version::STRING, '1') <> %(version)s
 """
 
 
@@ -92,6 +123,7 @@ def load_points(cur, sql: str, hours: int) -> list[Point]:
             lon=r[4],
             speed_kts=r[5],
             course_deg=r[6],
+            nav_status=r[7],
         )
         for r in rows
     ]
@@ -133,20 +165,84 @@ def match_existing(alert: Alert, existing: list[tuple]) -> str | None:
     return None
 
 
-def params_for(alert: Alert, alert_id: str) -> dict:
+def new_alert_id(alert: Alert) -> str:
+    start = alert.start_at.isoformat() if alert.start_at else ""
+    key = f"v{DETECTOR_VERSION}|{alert.rule}|{alert.track_id}|{start}"
+    return str(uuid.uuid5(ALERT_NAMESPACE, key))
+
+
+def stage_row(alert: Alert, alert_id: str, is_new: bool) -> dict:
     return {
-        "alert_id": alert_id,
-        "rule": alert.rule,
-        "track_type": alert.track_type,
-        "track_id": alert.track_id,
-        "score": alert.score,
-        "evidence": json.dumps(alert.evidence_ids),
-        "details": json.dumps(alert.details, default=str),
-        "lat": alert.lat,
-        "lon": alert.lon,
-        "start_at": alert.start_at.isoformat() if alert.start_at else None,
-        "end_at": alert.end_at.isoformat() if alert.end_at else None,
+        "ALERT_ID": alert_id,
+        "IS_NEW": is_new,
+        "RULE": alert.rule,
+        "TRACK_TYPE": alert.track_type,
+        "TRACK_ID": alert.track_id,
+        "SCORE": alert.score,
+        "EVIDENCE_JSON": json.dumps(alert.evidence_ids),
+        "DETAILS_JSON": json.dumps(
+            {**alert.details, "detector_version": DETECTOR_VERSION}, default=str
+        ),
+        "LAT": alert.lat,
+        "LON": alert.lon,
+        "START_AT": alert.start_at,
+        "END_AT": alert.end_at,
     }
+
+
+def plan_writes(
+    alerts: list[Alert], existing: list[tuple]
+) -> tuple[list[dict], list[tuple[Alert, str]], dict[str, int]]:
+    """Decide insert vs update for each alert and apply the storm guard.
+
+    Returns (stage rows, newly created (alert, id) pairs, {rule: held-back count}).
+    """
+    existing = list(existing)
+    rows: list[dict] = []
+    created: list[tuple[Alert, str]] = []
+    new_by_rule: dict[str, list[tuple[Alert, str]]] = {}
+    for a in alerts:
+        match = match_existing(a, existing)
+        if match:
+            rows.append(stage_row(a, match, is_new=False))
+            continue
+        alert_id = new_alert_id(a)
+        existing.append((alert_id, a.rule, a.track_id, a.start_at, a.end_at))
+        new_by_rule.setdefault(a.rule, []).append((a, alert_id))
+
+    held: dict[str, int] = {}
+    for rule, items in new_by_rule.items():
+        if len(items) > STORM_LIMIT:
+            held[rule] = len(items)
+            continue
+        for a, alert_id in items:
+            rows.append(stage_row(a, alert_id, is_new=True))
+            created.append((a, alert_id))
+    return rows, created, held
+
+
+def apply_writes(conn, rows: list[dict]) -> None:
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+    for col in ("START_AT", "END_AT"):
+        df[col] = pd.to_datetime(df[col], utc=True)
+    ok, *_ = write_pandas(
+        conn,
+        df,
+        table_name=STAGE_TABLE,
+        schema="OPS",
+        auto_create_table=True,
+        overwrite=True,
+        table_type="temporary",
+        use_logical_type=True,
+        quote_identifiers=False,
+    )
+    if not ok:
+        raise RuntimeError("staging alerts failed")
+    cur = conn.cursor()
+    cur.execute(APPLY_UPDATES_SQL)
+    cur.execute(APPLY_INSERTS_SQL)
 
 
 def run_once(hours: int, dry_run: bool, thresholds: Thresholds, audit: AuditLog | None) -> dict:
@@ -177,33 +273,62 @@ def run_once(hours: int, dry_run: bool, thresholds: Thresholds, audit: AuditLog 
             return summary
 
         existing = cur.execute(EXISTING_SQL, {"hours": hours * 2}).fetchall()
-        for a in alerts:
-            match = match_existing(a, existing)
-            if match:
-                cur.execute(UPDATE_SQL, params_for(a, match))
-                summary["updated"] += 1
-                action, alert_id = "alert_updated", match
-            else:
-                key = f"{a.rule}|{a.track_id}|{a.start_at.isoformat() if a.start_at else ''}"
-                alert_id = str(uuid.uuid5(ALERT_NAMESPACE, key))
-                cur.execute(INSERT_SQL, params_for(a, alert_id))
-                existing.append((alert_id, a.rule, a.track_id, a.start_at, a.end_at))
-                summary["created"] += 1
-                action = "alert_created"
-            if audit and action == "alert_created":
+        rows, created, held = plan_writes(alerts, existing)
+        apply_writes(conn, rows)
+        summary["created"] = len(created)
+        summary["updated"] = len(rows) - len(created)
+        if held:
+            summary["held_back"] = held
+        for rule, count in held.items():
+            log.warning(
+                "STORM GUARD: %s would create %d new alerts in one pass (limit %d); held back. "
+                "Likely a detector fault: investigate before raising the limit.",
+                rule,
+                count,
+                STORM_LIMIT,
+            )
+            if audit:
+                audit.record("system:detector", "storm_guard_held", rule=rule, count=count)
+        if audit:
+            for a, alert_id in created:
                 audit.record(
                     "system:detector",
-                    action,
+                    "alert_created",
                     alert_id=alert_id,
                     rule=a.rule,
                     track_id=a.track_id,
                     score=a.score,
                     evidence_count=len(a.evidence_ids),
+                    detector_version=DETECTOR_VERSION,
                 )
         summary["seconds"] = round(time.monotonic() - t0, 1)
         return summary
     finally:
         conn.close()
+
+
+def retract(rule: str, reason: str, audit: AuditLog | None) -> int:
+    """Mark a rule's alerts from older detector versions as RETRACTED (reversible; no delete)."""
+    if not reason:
+        raise SystemExit("--reason is required so reviewers know why alerts were retracted")
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(RETRACT_SQL, {"rule": rule, "reason": reason, "version": DETECTOR_VERSION})
+        count = cur.rowcount or 0
+    finally:
+        conn.close()
+    log.info("retracted %d %s alerts from detector versions != %s", count, rule, DETECTOR_VERSION)
+    if audit:
+        audit.record(
+            "system:maintenance",
+            "alerts_retracted",
+            rule=rule,
+            count=count,
+            reason=reason,
+            current_detector_version=DETECTOR_VERSION,
+        )
+    return count
 
 
 def main() -> None:
@@ -212,12 +337,21 @@ def main() -> None:
     parser.add_argument("--once", action="store_true", help="run one pass and exit")
     parser.add_argument("--interval", type=int, default=300, help="seconds between passes")
     parser.add_argument("--dry-run", action="store_true", help="print alerts, write nothing")
+    parser.add_argument(
+        "--retract-rule",
+        metavar="RULE",
+        help="retract this rule's alerts from older detector versions, then exit",
+    )
+    parser.add_argument("--reason", default="", help="reason recorded with --retract-rule")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     for noisy in ("snowflake", "snowflake.connector", "snowflake.connector._core", "urllib3"):
         logging.getLogger(noisy).setLevel(logging.ERROR)
     audit = None if args.dry_run else AuditLog(get_settings().audit_log_path)
+    if args.retract_rule:
+        retract(args.retract_rule, args.reason, audit)
+        return
     thresholds = Thresholds()
     while True:
         started = datetime.now(UTC)

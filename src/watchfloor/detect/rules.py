@@ -39,6 +39,20 @@ class Point:
     lon: float
     speed_kts: float | None = None
     course_deg: float | None = None
+    nav_status: int | None = None  # AIS navigational status; 5 = moored
+
+
+NAV_MOORED = 5
+NAV_FISHING = 7
+
+
+def is_moored(p: Point) -> bool:
+    return p.nav_status == NAV_MOORED
+
+
+def is_fishing(p: Point) -> bool:
+    # Pair trawlers work side by side at low speed for hours: a perfect rendezvous look-alike.
+    return p.nav_status == NAV_FISHING
 
 
 @dataclass
@@ -140,14 +154,15 @@ def find_loitering(
 
     Two-pointer scan per track: from each anchor point, extend forward while every point stays
     inside the circle and reports keep arriving (a long silence is an AIS_GAP, not loitering).
-    Once a stay qualifies, scanning resumes after it, so one stay produces one alert.
+    Once a stay qualifies, scanning resumes after it, so one stay produces one alert. Vessels
+    that report AIS status "moored" are at a berth and are never anchors for a loiter.
     """
     alerts: list[Alert] = []
     for track_id, pts in group_tracks(points).items():
         n, i = len(pts), 0
         while i < n:
             anchor = pts[i]
-            if in_port(anchor.lat, anchor.lon):
+            if is_moored(anchor) or in_port(anchor.lat, anchor.lon):
                 i += 1
                 continue
             j = i
@@ -191,6 +206,25 @@ def find_loitering(
     return alerts
 
 
+def _group_sizes(pairs: list[tuple[Point, Point]]) -> dict[str, int]:
+    """Size of the connected group each track belongs to (union-find over close pairs)."""
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for p, q in pairs:
+        parent[find(p.track_id)] = find(q.track_id)
+    root_size: dict[str, int] = defaultdict(int)
+    for tid in list(parent):
+        root_size[find(tid)] += 1
+    return {tid: root_size[find(tid)] for tid in parent}
+
+
 # --------------------------------------------------------------------------- DET-03 rendezvous
 def find_rendezvous(
     points: Iterable[Point],
@@ -199,6 +233,7 @@ def find_rendezvous(
     min_duration: timedelta = timedelta(minutes=30),
     bin_size: timedelta = timedelta(minutes=10),
     in_port: PortFilter = _never_in_port,
+    max_group_size: int = 3,
 ) -> list[Alert]:
     """Flag pairs of vessels that stay close together at low speed, away from port.
 
@@ -206,13 +241,21 @@ def find_rendezvous(
        per slot.
     2. Within a slot, find close pairs with a spatial grid (cells ~ max_distance wide), so we
        only compare neighbours instead of every pair of ships.
-    3. A pair that is close in consecutive slots (one missed slot tolerated) spanning at least
+    3. Crowd filter: close vessels in a slot are grouped (connected components). A ship-to-ship
+       transfer involves 2-3 vessels; a bigger cluster of slow ships is a berth, anchorage or
+       harbour the port list doesn't know about, so its pairs are dropped. This is what keeps
+       unlisted ports from flooding the alert queue.
+    4. A pair that is close in consecutive slots (one missed slot tolerated) spanning at least
        ``min_duration`` is a rendezvous.
+
+    Vessels reporting AIS status "moored" or "engaged in fishing" are excluded up front.
     """
     bin_s = bin_size.total_seconds()
     slots: dict[int, dict[str, Point]] = defaultdict(dict)
     for p in points:
-        if p.speed_kts is None or p.speed_kts > max_speed_kts or in_port(p.lat, p.lon):
+        if p.speed_kts is None or p.speed_kts > max_speed_kts or is_moored(p) or is_fishing(p):
+            continue
+        if in_port(p.lat, p.lon):
             continue
         b = int(p.observed_at.timestamp() // bin_s)
         prev = slots[b].get(p.track_id)
@@ -226,6 +269,7 @@ def find_rendezvous(
         for p in latest.values():
             cell_lon = cell_lat / max(math.cos(math.radians(p.lat)), 0.2)
             grid[(math.floor(p.lat / cell_lat), math.floor(p.lon / cell_lon))].append(p)
+        slot_pairs: list[tuple[Point, Point]] = []
         for (cy, cx), members in grid.items():
             for p in members:
                 for dy in (-1, 0, 1):
@@ -234,7 +278,12 @@ def find_rendezvous(
                             if q.track_id <= p.track_id:
                                 continue  # each unordered pair once
                             if haversine_nm(p.lat, p.lon, q.lat, q.lon) <= max_distance_nm:
-                                hits[(p.track_id, q.track_id)].append((b, p, q))
+                                slot_pairs.append((p, q))
+
+        group_size = _group_sizes(slot_pairs)
+        for p, q in slot_pairs:
+            if group_size[p.track_id] <= max_group_size:
+                hits[(p.track_id, q.track_id)].append((b, p, q))
 
     alerts: list[Alert] = []
     for (a, b_id), events in hits.items():
