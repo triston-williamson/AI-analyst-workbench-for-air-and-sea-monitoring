@@ -44,6 +44,7 @@ RULE_COLORS = {
     "RENDEZVOUS": "#ff006e",
     "ORBIT": "#c77dff",
     "ML_ANOMALY": "#2ec4b6",
+    "SANCTIONS": "#e63946",
 }
 RULE_LABELS = {
     "AIS_GAP": "Went dark",
@@ -51,6 +52,7 @@ RULE_LABELS = {
     "RENDEZVOUS": "Ship meeting",
     "ORBIT": "Circling",
     "ML_ANOMALY": "ML anomaly",
+    "SANCTIONS": "Sanctioned vessel",
 }
 INFRA_COLORS = {"Pipeline": "#c08552", "Telecom cable": "#48cae4", "Power cable": "#ffd166"}
 

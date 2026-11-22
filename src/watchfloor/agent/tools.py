@@ -73,6 +73,8 @@ class Investigation:
         self.audit = audit
         self.sdn = sdn  # tuple[SdnVessel] for tests; None -> load the downloaded list
         self.allowed_ids: set[str] = {f"alert:{alert['ALERT_ID']}", *alert.get("evidence", [])}
+        if alert.get("details", {}).get("sdn_entry"):  # SANCTIONS alerts name their list entry
+            self.allowed_ids.add(f"sdn:{alert['details']['sdn_entry']}")
         self.tool_calls = 0
         self.window_start = pd.Timestamp(alert["START_AT"]).to_pydatetime()
         self.window_end = pd.Timestamp(alert["END_AT"]).to_pydatetime()

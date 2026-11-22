@@ -107,26 +107,51 @@ def screen(
     imo_s = str(imo) if imo else None
     mmsi_s = str(mmsi) if mmsi else None
     name_n = _norm(name) if name else None
+    by_imo, by_mmsi, by_name = _index(vessels)
+    hits: dict[str, tuple[SdnVessel, str, str]] = {}  # strongest reason per entry
+    for v in by_name.get(name_n, []) if name_n and len(name_n) >= 4 else []:
+        hits[v.ent_num] = (v, "name only (verify: names are reused and spoofed)", "weak")
+    for v in by_mmsi.get(mmsi_s, []) if mmsi_s else []:
+        hits[v.ent_num] = (v, "MMSI", "medium")
+    for v in by_imo.get(imo_s, []) if imo_s else []:
+        hits[v.ent_num] = (v, "IMO number", "strong")
     matches = []
-    for v in vessels:
-        reason = None
-        if imo_s and v.imo == imo_s:
-            reason, strength = "IMO number", "strong"
-        elif mmsi_s and v.mmsi == mmsi_s:
-            reason, strength = "MMSI", "medium"
-        elif name_n and len(name_n) >= 4 and _norm(v.name) == name_n:
-            reason, strength = "name only (verify: names are reused and spoofed)", "weak"
-        if reason:
-            matches.append(
-                {
-                    "citation": f"[sdn:{v.ent_num}]",
-                    "sdn_name": v.name,
-                    "program": v.program,
-                    "flag": v.flag,
-                    "imo": v.imo,
-                    "mmsi": v.mmsi,
-                    "matched_on": reason,
-                    "strength": strength,
-                }
-            )
+    for v, reason, strength in hits.values():
+        matches.append(
+            {
+                "citation": f"[sdn:{v.ent_num}]",
+                "sdn_name": v.name,
+                "program": v.program,
+                "flag": v.flag,
+                "imo": v.imo,
+                "mmsi": v.mmsi,
+                "matched_on": reason,
+                "strength": strength,
+            }
+        )
+    order = {"strong": 0, "medium": 1, "weak": 2}
+    matches.sort(key=lambda m: order[m["strength"]])
     return {"available": True, "vessels_on_list": len(vessels), "matches": matches}
+
+
+_INDEXES: dict[int, tuple[dict, dict, dict]] = {}
+
+
+def _index(vessels: tuple[SdnVessel, ...]) -> tuple[dict, dict, dict]:
+    """IMO / MMSI / normalised-name lookups, built once per loaded list. A linear scan of
+    ~1,600 entries for each of ~3,300 vessels every detector pass would be millions of
+    comparisons; the index makes each lookup O(1)."""
+    key = id(vessels)
+    if key not in _INDEXES:
+        by_imo: dict[str, list] = {}
+        by_mmsi: dict[str, list] = {}
+        by_name: dict[str, list] = {}
+        for v in vessels:
+            if v.imo:
+                by_imo.setdefault(v.imo, []).append(v)
+            if v.mmsi:
+                by_mmsi.setdefault(v.mmsi, []).append(v)
+            by_name.setdefault(_norm(v.name), []).append(v)
+        _INDEXES.clear()  # keep only the current list
+        _INDEXES[key] = (by_imo, by_mmsi, by_name)
+    return _INDEXES[key]

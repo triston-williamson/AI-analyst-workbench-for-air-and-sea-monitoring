@@ -118,6 +118,13 @@ def explain(a: dict) -> str:
             f"{d.get('window_minutes')} min. Sustained orbits indicate surveillance, patrol or "
             "a holding pattern."
         )
+    if rule == "SANCTIONS":
+        return (
+            f"Matches OFAC SDN entry {d.get('sdn_entry')} ({d.get('sdn_name')}, "
+            f"{d.get('program')}) on {d.get('matched_on')} ({d.get('match_strength')} match). "
+            f"Seen {d.get('reports')} times in the area. Presence alone is not wrongdoing "
+            "(transit can be lawful); check its route, meetings and port calls."
+        )
     if rule == "ML_ANOMALY":
         drivers = ", ".join(
             f"{x['feature'].replace('_', ' ')} {x['robust_z']:+.1f}σ"
