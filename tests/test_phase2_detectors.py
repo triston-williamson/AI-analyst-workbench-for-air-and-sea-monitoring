@@ -219,7 +219,12 @@ def test_detect_combines_all_rules():
     a = drift("555555555", (57.5, 20.5), hours=1, step_min=5, speed=1.0, seed=1)
     b = drift("666666666", (57.502, 20.5), hours=1, step_min=5, speed=1.0, seed=2)
     aircraft = circle("abc123", OPEN_SEA, 3, 4, 12, with_course=True)
-    rules = {a.rule for a in detect(vessels + a + b, aircraft, Thresholds())}
+    from watchfloor.detect.runner import Identity
+
+    # v6: loitering needs a vessel that has said what it is (unknown-identity loiterers were
+    # overwhelmingly pilot/rescue/fishing boats in live data).
+    ids = {"111111111": Identity(70, "CARGO SHIP", length_m=120)}
+    rules = {a.rule for a in detect(vessels + a + b, aircraft, Thresholds(), ids)}
     assert {"LOITER", "RENDEZVOUS", "ORBIT"} <= rules
 
 

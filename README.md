@@ -20,10 +20,16 @@ audit history, then approves or rejects it.*
 *Ship-to-ship detection after tuning on live data (129 alerts → 7): a tanker lies 0.011 nm
 alongside a cargo ship outside Gothenburg. Both tracks converge on the meeting point.*
 
+![A vessel stopped 0.058 nm from the Baltic 1 wind-farm power cable; the alert leads with NEAR SEABED INFRASTRUCTURE](docs/images/console-loiter-cable.jpg)
+
+*Loitering is ranked by what lies underneath: a vessel stopped 0.058 nm from the Baltic 1
+export cable is raised first. Anchor dragging damaged Baltic cables and pipelines in 2023–24.*
+
 **Tuned on live data, not guessed.** Each detector was profiled against hours of real Baltic
-traffic and tightened from evidence: ship-meeting alerts 129 → 7, ML alerts 43 → 2 (the top one
-a self-identified naval vessel on a patrol pattern). The whole queue went from 170+ open alerts
-to 16. Every change is pinned by a regression test; see [DESIGN.md §5](docs/DESIGN.md#5-detection-design-phase-2).
+traffic and tightened from evidence: ship meetings 129 → 7, ML anomalies 43 → 2 (the top one a
+self-identified naval vessel on a patrol pattern), loitering 163 → 26 with ships near seabed
+infrastructure ranked first. Every change is pinned by a regression test; see
+[DESIGN.md §5](docs/DESIGN.md#5-detection-design-phase-2).
 
 ## Why
 
