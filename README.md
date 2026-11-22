@@ -39,7 +39,7 @@ aisstream (AIS) ─┘     └─► dead-letter (rejected input) └─► Dash
 | Phase | Scope | |
 |---|---|---|
 | 1 | Kafka ingest (ADS-B + AIS), Snowflake sink, live map | ✅ built |
-| 2 | Detection: AIS gaps, loitering, ship-to-ship rendezvous, aircraft orbits, ML anomaly scoring, alerts on map | ✅ built |
+| 2 | Detection: AIS gaps, loitering, ship-to-ship rendezvous, aircraft orbits, ML anomaly scoring, vessel-type context, alerts on map | ✅ built |
 | 3 | Analyst agent, OFAC sanctions screening, grounding loop | 📋 |
 | 4 | Alert queue, report approval, metrics page | 📋 |
 

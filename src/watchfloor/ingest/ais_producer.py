@@ -1,4 +1,7 @@
-"""Stream live AIS vessel positions from aisstream.io (websocket) and publish to Kafka.
+"""Stream live AIS from aisstream.io (websocket) and publish to Kafka.
+
+Positions go to ``ais.positions``. Static data (ship type, IMO, call sign, dimensions,
+destination) goes to ``ais.static``; detectors use the ship type for context.
 
 aisstream docs: https://aisstream.io/documentation
 """
@@ -12,14 +15,15 @@ from datetime import UTC, datetime
 
 import websockets
 
-from watchfloor.config import TOPIC_AIS, get_settings
+from watchfloor.config import TOPIC_AIS, TOPIC_AIS_STATIC, get_settings
 from watchfloor.ingest.kafka_utils import Publisher, make_producer
-from watchfloor.models import VesselPosition, make_record_id
+from watchfloor.models import VesselPosition, VesselStatic, make_record_id
 
 log = logging.getLogger("ais")
 
 STREAM_URL = "wss://stream.aisstream.io/v0/stream"
 POSITION_TYPES = ["PositionReport", "StandardClassBPositionReport"]
+STATIC_TYPES = ["ShipStaticData", "StaticDataReport"]
 
 
 def parse_ais_time(value: str | None) -> datetime | None:
@@ -55,16 +59,67 @@ def message_to_record(msg: dict, raw: str) -> dict | None:
     }
 
 
+def _dims(dim: dict | None) -> tuple[float | None, float | None]:
+    """AIS gives distances from the antenna to bow (A), stern (B), port (C), starboard (D)."""
+    if not dim:
+        return None, None
+    length = (dim.get("A") or 0) + (dim.get("B") or 0)
+    beam = (dim.get("C") or 0) + (dim.get("D") or 0)
+    return (length or None), (beam or None)
+
+
+def static_to_record(msg: dict, raw: str) -> dict | None:
+    """Map a ShipStaticData (class A) or StaticDataReport part B (class B) message.
+
+    Returns None for messages that carry no ship type (e.g. class B part A, name only).
+    """
+    mtype = msg.get("MessageType")
+    meta = msg.get("MetaData", {})
+    body = msg.get("Message", {}).get(mtype, {})
+    if mtype == "ShipStaticData":
+        ship_type, name = body.get("Type"), body.get("Name")
+        call_sign, imo = body.get("CallSign"), body.get("ImoNumber")
+        destination, draught = body.get("Destination"), body.get("MaximumStaticDraught")
+        length, beam = _dims(body.get("Dimension"))
+    elif mtype == "StaticDataReport":
+        part_b = body.get("ReportB") or {}
+        if not part_b.get("Valid"):
+            return None
+        ship_type, name = part_b.get("ShipType"), meta.get("ShipName")
+        call_sign, imo, destination, draught = part_b.get("CallSign"), None, None, None
+        length, beam = _dims(part_b.get("Dimension"))
+    else:
+        return None
+    if not ship_type:
+        return None
+    return {
+        "record_id": make_record_id("aisstream", raw),
+        "observed_at": parse_ais_time(meta.get("time_utc")),
+        "mmsi": meta.get("MMSI"),
+        "ship_type": ship_type,
+        "imo": imo,
+        "call_sign": call_sign,
+        "ship_name": name or meta.get("ShipName"),
+        "destination": destination,
+        "length_m": length,
+        "beam_m": beam,
+        "draught_m": draught,
+        "raw_payload": raw,
+    }
+
+
 async def stream() -> None:
     cfg = get_settings()
     if not cfg.aisstream_api_key:
         raise SystemExit("Set AISSTREAM_API_KEY in .env (free at https://aisstream.io)")
     min_lat, min_lon, max_lat, max_lon = cfg.aoi_bbox
-    pub = Publisher(make_producer(), TOPIC_AIS)
+    producer = make_producer()
+    pub = Publisher(producer, TOPIC_AIS)
+    pub_static = Publisher(producer, TOPIC_AIS_STATIC)
     subscribe = {
         "APIKey": cfg.aisstream_api_key.get_secret_value(),
         "BoundingBoxes": [[[min_lat, min_lon], [max_lat, max_lon]]],
-        "FilterMessageTypes": POSITION_TYPES,
+        "FilterMessageTypes": POSITION_TYPES + STATIC_TYPES,
     }
     backoff = 5
     while True:
@@ -83,6 +138,11 @@ async def stream() -> None:
                     if "error" in msg:
                         raise SystemExit(f"aisstream error: {msg['error']}")
                     try:
+                        if msg.get("MessageType") in STATIC_TYPES:
+                            static = static_to_record(msg, raw)
+                            if static:
+                                pub_static.publish(VesselStatic, static, key=str(static["mmsi"]))
+                            continue
                         record = message_to_record(msg, raw)
                     except (ValueError, TypeError) as exc:
                         log.debug("Unparseable AIS message: %s", exc)
@@ -91,6 +151,7 @@ async def stream() -> None:
                         pub.publish(VesselPosition, record, key=str(record["mmsi"]))
                         if (pub.ok + pub.rejected) % 500 == 0:
                             pub.flush_and_report()
+                            pub_static.flush_and_report()
         except (websockets.ConnectionClosed, OSError) as exc:
             log.warning("AIS stream dropped (%s); reconnecting in %ss", exc, backoff)
             await asyncio.sleep(backoff)

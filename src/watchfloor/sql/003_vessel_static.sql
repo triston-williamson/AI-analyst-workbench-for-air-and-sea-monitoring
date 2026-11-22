@@ -1,0 +1,34 @@
+-- Migration 003: AIS static/voyage data (ship type, IMO, call sign, dimensions, destination).
+-- Idempotent: safe to re-run. Applied by `python -m watchfloor.load.setup_snowflake`.
+
+USE ROLE WATCHFLOOR_ROLE;
+USE WAREHOUSE WATCHFLOOR_WH;
+USE DATABASE WATCHFLOOR;
+
+CREATE TABLE IF NOT EXISTS RAW.VESSEL_STATIC (
+  RECORD_ID        VARCHAR(32)   NOT NULL,
+  SOURCE           VARCHAR(16)   NOT NULL,
+  OBSERVED_AT      TIMESTAMP_TZ  NOT NULL,
+  INGESTED_AT      TIMESTAMP_TZ  NOT NULL,
+  LOADED_AT        TIMESTAMP_TZ,
+  MMSI             NUMBER(9,0)   NOT NULL,
+  SHIP_TYPE        INTEGER       NOT NULL,   -- ITU-R M.1371 type code, e.g. 52 tug, 80-89 tanker
+  IMO              NUMBER(7,0),
+  CALL_SIGN        VARCHAR(10),
+  SHIP_NAME        VARCHAR(64),
+  DESTINATION      VARCHAR(32),
+  LENGTH_M         FLOAT,
+  BEAM_M           FLOAT,
+  DRAUGHT_M        FLOAT,
+  RAW_PAYLOAD      VARCHAR,
+  KAFKA_TOPIC      VARCHAR(64),
+  KAFKA_PARTITION  INTEGER,
+  KAFKA_OFFSET     INTEGER
+);
+
+-- Latest self-reported identity per vessel. Ships re-send static data about every 6 minutes.
+CREATE OR REPLACE VIEW CORE.VESSEL_IDENTITY AS
+SELECT MMSI, SHIP_TYPE, IMO, CALL_SIGN, SHIP_NAME, DESTINATION, LENGTH_M, BEAM_M, DRAUGHT_M,
+       OBSERVED_AT AS IDENTITY_AS_OF
+FROM RAW.VESSEL_STATIC
+QUALIFY ROW_NUMBER() OVER (PARTITION BY MMSI ORDER BY OBSERVED_AT DESC) = 1;
