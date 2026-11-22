@@ -98,6 +98,8 @@ before it counts as finished work.
 | DET-14 | Automated retraction never overrides a human review decision | `tests/test_vessel_types.py` | Done |
 | AUD-02 | Audit log stays a single valid chain with several concurrent writers; broken chains are archived and re-anchored, never edited | `tests/test_guardrails.py` | Done |
 | DET-15 | ML scores merchant ships at sea only, with minimum track length and an absolute score floor; at most 5 per pass | `tests/test_phase2_detectors.py` (incl. positive control), live run (43 → 2) | Done |
+| DET-16 | LOITER near undersea cables/pipelines (≤ 1 nm) is always raised, ranked up and names the asset; anchorage crowds suppressed | `tests/test_vessel_types.py`, live run (163 → 26) | Done |
+| DET-17 | The storm guard never holds back priority alerts (near infrastructure, tanker pairs) | `tests/test_vessel_types.py` | Done |
 | AGT-01 | Agent tools are read-only; the agent cannot change alert or report status | | Planned |
 | AGT-02 | Every factual sentence in a draft cites `[rec:<id>]` | `guardrails.grounding` | Checker done |
 | AGT-03 | Citations must reference records supplied to the agent; invented IDs fail | `tests/test_guardrails.py` | Checker done |
@@ -121,7 +123,7 @@ before it counts as finished work.
 | Rule | Logic | Default thresholds | Known benign look-alikes |
 |---|---|---|---|
 | AIS_GAP | Consecutive reports from one MMSI more than N apart; score = duration and displacement | gap ≥ 2 h | Terrestrial AIS coverage holes far offshore; vessels powering down alongside (port-suppressed) |
-| LOITER | Two-pointer scan: from each anchor point, extend while the track stays within R and reports keep arriving | R = 1 nm, ≥ 3 h | Ships waiting at anchorages outside port limits for a berth |
+| LOITER | Two-pointer scan: from each anchor point, extend while the track stays within R and reports keep arriving. Merchant ships only (same pool as RENDEZVOUS) that have broadcast what they are and aren't fishing; loiterers with ≥ 2 others within 3 nm dropped as an anchorage. **Any loiterer within 1 nm of an undersea cable or pipeline is always kept, +0.3, and named with the asset and distance** | R = 1 nm, ≥ 3 h | Lone ships waiting at anchor for a berth; cable maintenance/survey vessels (legitimate, but must be seen) |
 | RENDEZVOUS | 10-minute time slots; spatial grid hash finds close pairs per slot (neighbours only, not all pairs); groups of more than 3 slow vessels are dropped as berths/anchorages; consecutive slots form an episode. Only ships capable of a transfer: class A transponder, ≥ 50 m, not passenger, not moored/fishing. Spots where ≥ 4 different vessels pair up over time are dropped as berths. Tanker pairs +0.3, tanker alongside cargo +0.2, both identities unknown −0.2 | ≤ 0.15 nm (alongside), ≤ 3 kts, ≥ 30 min, group ≤ 3 | Legitimate bunkering; berths in inland waters (e.g. Lake Mälaren) |
 | ORBIT | Signed heading change summed over a sliding window, so S-turns cancel and only sustained circling accumulates | ≥ 720° in ≤ 45 min | Airport holding patterns, survey and training flights |
 | ML_ANOMALY | Isolation Forest over 8 kinematic features per track (speed mean/std/max, path length, straightness, turn rate, max report gap, report rate); robust z-scores name the top 3 drivers. Baseline = merchant ships at sea: same transfer-capable pool as RENDEZVOUS, positions inside port zones dropped | top 5, ≥ 99th percentile **and** raw score ≥ 0.65, tracks ≥ 2 h (aircraft 0.5 h) and ≥ 20 points, ≥ 30 tracks | Naval patrols, research/survey ships, vessels on inland waters (e.g. Lake Mälaren) |
@@ -168,6 +170,20 @@ before it counts as finished work.
   of Finland (a patrol pattern); the other a research ship. Both genuinely move unlike merchant
   traffic, and both are benign once an analyst looks, which is the intended division of labour.
   Names now fall back to position reports for vessels that never send static data.
+- **Tuning loitering, and ranking by what's underneath (detector v6).** Once ~7 h of data
+  existed, the 3 h loiter rule produced ~155 alerts per pass and the storm guard held them all.
+  Profiling 163: almost all stationary, 59 ferries idle at small terminals, 42 in anchorage
+  crowds, and unknown-identity loiterers overwhelmingly pilot/rescue/fishing boats. Each
+  candidate filter was measured before choosing (e.g. dropping unknown identity 77 → 28;
+  widening the anchorage radius 2 → 3 nm a further few). Distance to the EMODnet cable/pipeline
+  overlay is now computed for every loiterer: within 1 nm is always kept and ranked first,
+  because anchor dragging across Balticconnector and Estlink 2 is the real-world threat.
+  **Result: 163 → 26**, the top three all within ~0.5 nm of power cables, led by a vessel
+  reporting "restricted manoeuvrability" 0.058 nm from the Baltic 1 wind-farm export cable
+  (most likely maintenance: legitimate, but exactly what must be seen). The storm guard now
+  always lets priority alerts (near infrastructure, tanker pairs) through, so a flood of noise
+  cannot hide them. Trade-off, documented: a vessel that never broadcasts identity and loiters
+  far from infrastructure raises no LOITER alert; AIS_GAP and ML still cover it.
 - **Idempotency.** Detection re-scans a sliding window. An alert whose rule and track overlap an
   existing alert's time window updates that alert (score, evidence, window) instead of creating a
   duplicate. Only new alerts are written to the audit log.

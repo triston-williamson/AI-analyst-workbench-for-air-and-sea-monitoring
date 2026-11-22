@@ -83,11 +83,18 @@ def explain(a: dict) -> str:
             "Vessels must broadcast continuously; long gaps can hide port calls or transfers."
         )
     if rule == "LOITER":
-        return (
+        status = f", reporting '{d['nav_status']}'" if d.get("nav_status") else ""
+        base = (
             f"Stayed within {d.get('radius_nm')} nm for {d.get('duration_hours')} h away from "
-            f"any port{kind}. Prolonged loitering over open water can indicate waiting for a "
-            "meeting, or activity over undersea infrastructure."
+            f"any port{kind}{status}, on its own rather than in an anchorage crowd."
         )
+        if d.get("near_infrastructure"):
+            return (
+                f"NEAR SEABED INFRASTRUCTURE: {d.get('asset_distance_nm')} nm from "
+                f"{d.get('nearest_asset')}. {base} Ships stopped over cables and pipelines are "
+                "checked first: anchor dragging damaged Baltic infrastructure in 2023-24."
+            )
+        return base
     if rule == "RENDEZVOUS":
         lead = (
             "TANKER PAIR. "

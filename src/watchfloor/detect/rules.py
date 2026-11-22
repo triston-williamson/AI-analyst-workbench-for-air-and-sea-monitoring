@@ -356,6 +356,33 @@ def suppress_recurring_spots(
     return other + kept, dropped
 
 
+def suppress_anchorage_clusters(
+    alerts: list[Alert], radius_nm: float = 2.0, min_neighbours: int = 3, keep=lambda a: False
+) -> tuple[list[Alert], int]:
+    """Drop LOITER alerts that sit in a crowd of other loiterers: a designated anchorage.
+
+    Ships waiting for a berth anchor together; one vessel stopped on its own is the unusual
+    case. ``keep(alert)`` exempts alerts that matter regardless (e.g. near infrastructure).
+    Returns (kept alerts, number suppressed).
+    """
+    loiter = [a for a in alerts if a.rule == "LOITER" and a.lat is not None]
+    other = [a for a in alerts if a not in loiter]
+    kept, dropped = [], 0
+    for a in loiter:
+        neighbours = sum(
+            1
+            for b in loiter
+            if b is not a
+            and b.track_id != a.track_id
+            and haversine_nm(a.lat, a.lon, b.lat, b.lon) <= radius_nm
+        )
+        if neighbours >= min_neighbours and not keep(a):
+            dropped += 1
+        else:
+            kept.append(a)
+    return other + kept, dropped
+
+
 # --------------------------------------------------------------------------- DET-04 orbits
 def find_orbits(
     points: Iterable[Point],

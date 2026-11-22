@@ -269,3 +269,79 @@ def test_name_only_identity_is_shown_but_still_counts_as_unknown():
     enrich(a, {"211000001": Identity(None, "NAVAL VESSEL"), "999": Identity(70, "X")})
     assert a.details["vessel_names"] == ["NAVAL VESSEL", "MMSI 211000002"]
     assert a.details["identity_unknown"] is True
+
+
+# ---------------------------------------------------------------- v6 loiter tuning
+# Tuned on 163 live LOITER alerts: 59 ferries, 42 in anchorage crowds, unknown-identity
+# loiterers mostly pilot/rescue/fishing boats; 3 ships stopped within 1 nm of power cables.
+from watchfloor.detect.infrastructure import nearest_asset  # noqa: E402
+from watchfloor.detect.rules import suppress_anchorage_clusters  # noqa: E402
+
+CABLE = (("Power cable", "TEST CABLE", 18.0, 56.0, 19.0, 56.0),)  # lon/lat, east-west at 56N
+
+
+def test_nearest_asset_distance():
+    hit = nearest_asset(56.01, 18.5, segments=CABLE)
+    assert hit.name == "TEST CABLE" and hit.distance_nm == pytest.approx(0.6, abs=0.01)
+    assert nearest_asset(57.0, 18.5, segments=CABLE) is None  # 60 nm away, outside search
+
+
+def test_known_baltic_asset_is_found():
+    # The real overlay: a point on the Baltic Cable's straight leg off Rostock.
+    hit = nearest_asset(54.292, 11.9)
+    assert hit is not None and "BalticCable" in hit.name and hit.distance_nm < 0.1
+
+
+def _loiter(track, lat, lon, near=False):
+    a = Alert("LOITER", "VESSEL", track, 0.5, [], lat=lat, lon=lon, start_at=T0, end_at=T0)
+    if near:
+        a.details["near_infrastructure"] = True
+    return a
+
+
+def test_anchorage_crowd_suppressed_but_infrastructure_kept():
+    crowd = [_loiter(str(k), 57.60 + 0.01 * k, 11.70) for k in range(4)]
+    crowd.append(_loiter("over-cable", 57.605, 11.70, near=True))
+    lone = [_loiter("alone", 58.5, 20.0)]
+    kept, dropped = suppress_anchorage_clusters(
+        crowd + lone,
+        radius_nm=3.0,
+        min_neighbours=2,
+        keep=lambda a: a.details.get("near_infrastructure"),
+    )
+    assert sorted(a.track_id for a in kept) == ["alone", "over-cable"] and dropped == 4
+
+
+def test_loiterer_near_cable_is_boosted_and_explained():
+    from watchfloor.dashboard.app import explain
+    from watchfloor.detect.runner import annotate_loiter
+
+    pts = drift("230000001", (54.292, 11.9), hours=4)  # stopped on the Baltic Cable
+    a = find_loitering_one(pts)
+    annotate_loiter(a, pts)
+    assert a.details["near_infrastructure"] and a.details["priority"] and a.score > 0.5
+    assert explain({"RULE": "LOITER", "details": a.details}).startswith("NEAR SEABED")
+
+
+def find_loitering_one(pts):
+    from watchfloor.detect.rules import find_loitering
+
+    return find_loitering(pts)[0]
+
+
+def test_unidentified_loiterer_dropped_unless_near_infrastructure():
+    far = drift("219000001", OPEN_SEA, hours=4)
+    on_cable = drift("219000002", (54.292, 11.9), hours=4)
+    rules_hit = {(a.rule, a.track_id) for a in detect(far + on_cable, [], Thresholds(), {})}
+    assert ("LOITER", "219000002") in rules_hit
+    assert ("LOITER", "219000001") not in rules_hit
+
+
+def test_storm_guard_never_holds_back_priority_alerts():
+    from watchfloor.detect.runner import STORM_LIMIT, plan_writes
+
+    flood = [_loiter(str(k), 57.0, 18.0) for k in range(STORM_LIMIT + 5)]
+    flood[0].details["priority"] = True
+    rows, created, held = plan_writes(flood, existing=[])
+    assert held == {"LOITER": STORM_LIMIT + 4}
+    assert [a.track_id for a, _ in created] == ["0"]

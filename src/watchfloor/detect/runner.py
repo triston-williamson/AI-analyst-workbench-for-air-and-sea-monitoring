@@ -33,6 +33,7 @@ from snowflake.connector.pandas_tools import write_pandas
 
 from watchfloor.config import get_settings
 from watchfloor.detect import ml, rules, ship_types
+from watchfloor.detect.infrastructure import nearest_asset
 from watchfloor.detect.ports import in_port
 from watchfloor.detect.rules import Alert, Point
 from watchfloor.guardrails.audit import AuditLog
@@ -49,7 +50,19 @@ ALERT_NAMESPACE = uuid.UUID("6f1c2d1e-9a51-4c4e-8f0e-7c3b3c1a9e10")
 # v5: ML baseline = merchant ships at sea: same vessel pool as v4 RENDEZVOUS, positions in
 #     port zones dropped, >= 2 h / 20 points per track, top 5 above an absolute score.
 #     Tuned on 43 live v4 alerts; see DESIGN.md.
-DETECTOR_VERSION = "5"
+# v6: LOITER limited to the same vessel pool; anchorage clusters suppressed; loiterers near
+#     undersea cables/pipelines always kept and ranked up. Tuned on 163 live alerts.
+DETECTOR_VERSION = "6"
+INFRA_NEAR_NM = 1.0
+INFRA_BOOST = 0.3
+NAV_STATUS = {
+    0: "under way",
+    1: "at anchor",
+    3: "restricted manoeuvrability",
+    5: "moored",
+    7: "fishing",
+    15: "not defined",
+}
 TANKER_PAIR_BOOST = 0.3
 TANKER_CARGO_BOOST = 0.2  # bunkering or cargo transfer alongside a cargo ship
 UNKNOWN_IDENTITY_PENALTY = 0.2  # neither vessel has ever said what it is: less to go on
@@ -63,6 +76,8 @@ class Thresholds:
     ais_gap: timedelta = timedelta(hours=2)
     loiter_radius_nm: float = 1.0
     loiter_min: timedelta = timedelta(hours=3)
+    loiter_cluster_radius_nm: float = 3.0  # anchorages spread a few nm; 2 nm missed Gothenburg's
+    loiter_cluster_min_neighbours: int = 2
     # Ships transferring cargo are moored alongside: antenna-to-antenna well under 0.15 nm.
     # At 0.5 nm (v3) neighbours in an anchorage alerted too.
     rendezvous_distance_nm: float = 0.15
@@ -216,6 +231,7 @@ def enrich(alert: Alert, identities: dict[str, Identity]) -> Alert:
     if alert.rule == "RENDEZVOUS":
         if all(ship_types.is_tanker(t) for t in types):
             alert.details["tanker_pair"] = True
+            alert.details["priority"] = True
             alert.score = round(min(1.0, alert.score + TANKER_PAIR_BOOST), 3)
         elif any(ship_types.is_tanker(t) for t in types) and all(
             ship_types.is_cargo_or_tanker(t) for t in types
@@ -257,6 +273,24 @@ def sts_capable(
     return not (ident.length_m and ident.length_m < min_length_m)
 
 
+def annotate_loiter(alert: Alert, track: list[Point]) -> Alert:
+    """Add AIS status and nearest seabed infrastructure; rank up loiterers near cables/pipes."""
+    stay = [p for p in track if alert.start_at <= p.observed_at <= alert.end_at]
+    statuses = [p.nav_status for p in stay if p.nav_status is not None]
+    if statuses:
+        code = max(set(statuses), key=statuses.count)
+        alert.details["nav_status"] = NAV_STATUS.get(code, f"status {code}")
+    asset = nearest_asset(alert.lat, alert.lon)
+    if asset is not None:
+        alert.details["nearest_asset"] = f"{asset.kind}: {asset.name}"
+        alert.details["asset_distance_nm"] = asset.distance_nm
+        if asset.distance_nm <= INFRA_NEAR_NM:
+            alert.details["near_infrastructure"] = True
+            alert.details["priority"] = True
+            alert.score = round(min(1.0, alert.score + INFRA_BOOST), 3)
+    return alert
+
+
 def detect(
     vessels: list[Point],
     aircraft: list[Point],
@@ -272,15 +306,47 @@ def detect(
 
     alerts: list[Alert] = []
     alerts += rules.find_ais_gaps(vessels, min_gap=t.ais_gap, in_port=in_port)
-    alerts += rules.find_loitering(
-        working, radius_nm=t.loiter_radius_nm, min_duration=t.loiter_min, in_port=in_port
-    )
     classes = track_classes(vessels)
     capable = {
         m
         for m in {p.track_id for p in working}
         if sts_capable(m, identities, classes, t.sts_min_length_m)
     }
+    # LOITER: merchant ships only (in live data 59 of 163 loiterers were ferries idle at small
+    # terminals), anchorage crowds dropped, anything stopped near seabed infrastructure kept.
+    by_track = rules.group_tracks([p for p in working if p.track_id in capable])
+    loiter = rules.find_loitering(
+        [p for p in working if p.track_id in capable],
+        radius_nm=t.loiter_radius_nm,
+        min_duration=t.loiter_min,
+        in_port=in_port,
+    )
+    for a in loiter:
+        annotate_loiter(a, by_track.get(a.track_id, []))
+
+    def near_infra(a: Alert) -> bool:
+        return bool(a.details.get("near_infrastructure"))
+
+    # Live data: loiterers that never broadcast type or size were overwhelmingly pilot, rescue
+    # and fishing boats (77 -> 28 when dropped), and "engaged in fishing" is normal slow work.
+    # Both are kept when near infrastructure; a silent vessel elsewhere is still covered by
+    # AIS_GAP and ML.
+    loiter = [
+        a
+        for a in loiter
+        if near_infra(a)
+        or (
+            a.details.get("nav_status") != "fishing"
+            and _knows_what_it_is(identities.get(a.track_id))
+        )
+    ]
+    loiter, _ = rules.suppress_anchorage_clusters(
+        loiter,
+        radius_nm=t.loiter_cluster_radius_nm,
+        min_neighbours=t.loiter_cluster_min_neighbours,
+        keep=near_infra,
+    )
+    alerts += loiter
     alerts += rules.find_rendezvous(
         [p for p in working if p.track_id in capable],
         max_distance_nm=t.rendezvous_distance_nm,
@@ -370,8 +436,11 @@ def plan_writes(
     held: dict[str, int] = {}
     for rule, items in new_by_rule.items():
         if len(items) > STORM_LIMIT:
-            held[rule] = len(items)
-            continue
+            # A flood is held back, but priority alerts (near seabed infrastructure, tanker
+            # pairs) always get through: noise must not be able to hide them.
+            priority = [(a, i) for a, i in items if a.details.get("priority")]
+            held[rule] = len(items) - len(priority)
+            items = priority
         for a, alert_id in items:
             rows.append(stage_row(a, alert_id, is_new=True))
             created.append((a, alert_id))
