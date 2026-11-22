@@ -10,14 +10,11 @@ from __future__ import annotations
 
 from importlib.resources import files
 
-from watchfloor.config import get_settings
 from watchfloor.load.snowflake_conn import connect
 
 
 def main() -> None:
-    cfg = get_settings()
     sql = (files("watchfloor") / "sql" / "001_setup.sql").read_text()
-    sql = sql.replace("<YOUR_USER>", f'"{cfg.snowflake_user.upper()}"')
     conn = connect(role="ACCOUNTADMIN", warehouse=None, database=None, schema=None)
     try:
         for cur in conn.execute_string(sql, remove_comments=True):

@@ -69,7 +69,8 @@ async def stream() -> None:
     backoff = 5
     while True:
         try:
-            async with websockets.connect(STREAM_URL) as ws:
+            # aisstream's handshake can take well over the library's 10 s default.
+            async with websockets.connect(STREAM_URL, open_timeout=60, ping_timeout=60) as ws:
                 await ws.send(json.dumps(subscribe))
                 log.info("Subscribed to aisstream for bbox %s", cfg.aoi_bbox)
                 backoff = 5

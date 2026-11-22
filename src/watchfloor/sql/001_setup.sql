@@ -1,6 +1,5 @@
 -- Watchfloor Snowflake setup. Run once as ACCOUNTADMIN (Snowsight worksheet), or via:
 --   python -m watchfloor.load.setup_snowflake
--- Replace <YOUR_USER> with your Snowflake username before running by hand.
 
 -- ---------- Compute, role, database ----------
 CREATE WAREHOUSE IF NOT EXISTS WATCHFLOOR_WH
@@ -8,7 +7,10 @@ CREATE WAREHOUSE IF NOT EXISTS WATCHFLOOR_WH
 
 CREATE ROLE IF NOT EXISTS WATCHFLOOR_ROLE;
 GRANT USAGE ON WAREHOUSE WATCHFLOOR_WH TO ROLE WATCHFLOOR_ROLE;
-GRANT ROLE WATCHFLOOR_ROLE TO USER <YOUR_USER>;
+-- Grant to whoever runs this script. The double quotes keep the exact case of the user name
+-- (trial accounts can have lowercase names, which an unquoted identifier would uppercase).
+SET current_user_name = '"' || CURRENT_USER() || '"';
+GRANT ROLE WATCHFLOOR_ROLE TO USER IDENTIFIER($current_user_name);
 
 CREATE DATABASE IF NOT EXISTS WATCHFLOOR;
 GRANT OWNERSHIP ON DATABASE WATCHFLOOR TO ROLE WATCHFLOOR_ROLE COPY CURRENT GRANTS;
