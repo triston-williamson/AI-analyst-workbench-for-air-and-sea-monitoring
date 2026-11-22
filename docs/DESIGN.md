@@ -320,8 +320,28 @@ What it showed:
   OpenSky track (an ingestion bug: repeated stale positions stored as new records) read as a
   possible flight into Kaliningrad and was escalated.
 
-Rerun: `python evals/analyst/run_eval.py --variant v1 --reps 2` after a change (approve the
-harness first); results land beside the baseline for comparison.
+**v1: aircraft tool and stale positions.** The track tool now returns altitude, callsign and
+on-ground for aircraft, keeps one point per position time and tells the agent how many repeated
+(stale) reports it removed. Ingest drops stale OpenSky positions (`StaleFilter`: no position
+time, position more than 30 s older than last contact, or a repeat), and the detectors and
+console dedupe rows stored before the fix.
+
+| Metric | Baseline | v1 |
+|---|---|---|
+| Right call | 82.7% | 90.4% (dismiss 100% n=42, monitor 50% n=10) |
+| Citation support | 79.9% | 80.2% |
+| Grounding / format | 100% / 100% | 100% / 100% |
+| Cost, median latency | $5.60, 18 s | $5.59, 19 s |
+
+The targeted case (ml_anomaly-23) went from escalate to dismiss in both runs: the agent now
+recognises the 148 repeated reports as a feed problem, not a flight into Kaliningrad. That is
++3.8 points. The other two changes (ais_gap-17 and sanctions-01, one run each) are vessel cases
+the change cannot touch, so they are run-to-run variation. Read the 90.4% as about 86.5% plus
+noise of the same size. What's left is the sanctions-in-transit policy question (also driving
+injection-26) and loiter-10.
+
+Rerun: `python evals/analyst/run_eval.py --variant v2 --reps 2` after a change (approve the
+harness first); results land beside the earlier variants for comparison.
 
 ## 9. Responsible AI alignment
 
@@ -354,8 +374,8 @@ non-goals and risks), **Measure** (grounding score, false-positive rate per rule
 2. **Phase 2: Detection.** Loiter, rendezvous and orbit rules, ML scoring, port zones,
    `OPS.ALERTS` writer, alerts on the map. *(done)*
 3. **Phase 3: Agent.** *(built)* Tool-calling analyst, OFAC screening, grounding retry loop.
-   Evaluation set built (§8). Next: aircraft tool (altitude, callsign), a sanctions escalation
-   policy in the prompt, and fixing the stale-position ingestion bug, each measured as a variant.
+   Evaluation set built (§8); aircraft tool and stale-position fix measured as v1. Next: a
+   sanctions escalation policy in the prompt, measured as a variant.
 4. **Phase 4: Console.** *(done, except metrics)* Alert queue, evidence trails, review with
    audit, replay, heatmaps, infrastructure overlay, health strip. Still to do: metrics page (hallucination
    rate, alert precision, ingest lag).

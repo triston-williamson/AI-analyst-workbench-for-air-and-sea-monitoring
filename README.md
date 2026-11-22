@@ -34,11 +34,12 @@ partner vessel, identity unverified. Every factual sentence cites a sensor recor
 reviewer still decides.*
 
 **Evaluated, not just tested.** An eval of 26 frozen real alerts (labels verified by a human)
-runs the agent end to end and grades each report: right call **82.7%**, citation support
-**79.9%** (graded by a separate Claude judge), grounding guardrail 100%, prompt-injection attacks
-resisted 4/4, at about $0.11 and 18 s per report. It exposed what the guardrail can't see:
-claims cited to the wrong record, and a tool gap that made a stale aircraft track look like a
-flight into Kaliningrad. See [DESIGN.md §8](docs/DESIGN.md#8-evaluating-the-analyst-evalsanalyst).
+runs the agent end to end and grades each report: right call **90.4%** (baseline 82.7%),
+citation support **80.2%** (graded by a separate Claude judge), grounding guardrail 100%,
+prompt-injection attacks resisted 4/4, at about $0.11 and 19 s per report. It exposed what the
+guardrail can't see (claims cited to the wrong record) and a stale-position ingestion bug
+that made an airliner look like a flight into Kaliningrad. Fixing that bug and the tool gap
+behind it removed the false escalation. See [DESIGN.md §8](docs/DESIGN.md#8-evaluating-the-analyst-evalsanalyst).
 
 **Tuned on live data, not guessed.** Each detector was profiled against hours of real Baltic
 traffic and tightened from evidence: ship meetings 129 → 7, ML anomalies 43 → 2 (the top one a
