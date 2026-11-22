@@ -91,7 +91,16 @@ docker compose up -d        # Kafka on :9092, Kafka UI on http://localhost:8080
 python -m watchfloor.load.setup_snowflake   # creates warehouse, role, DB, tables; re-run after pulling new migrations
 ```
 
-Then run each piece in its own terminal (or use **Run and Debug → "Run full pipeline"** in VS Code):
+Or start, check and stop everything with one script (runs each piece hidden in the background,
+logs to `logs/<name>.log`, and `stop` also suspends the Snowflake warehouse):
+
+```powershell
+.\scripts\pipeline.ps1 start
+.\scripts\pipeline.ps1 status
+.\scripts\pipeline.ps1 stop
+```
+
+Or run each piece in its own terminal (or use **Run and Debug → "Run full pipeline"** in VS Code):
 
 ```powershell
 python -m watchfloor.ingest.adsb_producer   # aircraft -> Kafka

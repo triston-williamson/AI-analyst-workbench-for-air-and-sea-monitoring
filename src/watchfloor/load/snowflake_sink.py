@@ -26,6 +26,7 @@ from watchfloor.config import (
     get_settings,
 )
 from watchfloor.load.snowflake_conn import connect
+from watchfloor.logsetup import configure as configure_logging
 
 log = logging.getLogger("sink")
 
@@ -79,7 +80,7 @@ def flush(conn, buffers: dict[str, list[dict]]) -> int:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    configure_logging("snowflake_sink")
     cfg = get_settings()
     consumer = KafkaConsumer(
         *ROUTES,

@@ -92,3 +92,16 @@ def test_rotate_archives_unchanged_and_links_new_chain(tmp_path):
     assert first["details"]["previous_last_hash"] == last
     assert first["details"]["previous_file"] == archived.name
     assert verify_chain(path) == (True, None)
+
+
+def test_process_logs_reach_their_file_immediately(tmp_path):
+    """Regression: hidden background processes on Windows lost log lines written to
+    redirected stderr; each process now logs to its own file, flushed per record."""
+    import logging
+
+    from watchfloor.logsetup import configure
+
+    path = configure("unit_test_process", log_dir=tmp_path)
+    logging.getLogger("detect").info("pass at 0600Z")
+    assert "pass at 0600Z" in path.read_text(encoding="utf-8")
+    logging.basicConfig(force=True, handlers=[logging.NullHandler()])

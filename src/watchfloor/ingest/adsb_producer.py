@@ -15,6 +15,7 @@ import httpx
 
 from watchfloor.config import TOPIC_ADSB, get_settings
 from watchfloor.ingest.kafka_utils import Publisher, make_producer
+from watchfloor.logsetup import configure as configure_logging
 from watchfloor.models import AircraftPosition, make_record_id
 
 log = logging.getLogger("adsb")
@@ -86,7 +87,7 @@ def state_to_record(s: list) -> dict:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    configure_logging("adsb_producer")
     cfg = get_settings()
     client = OpenSkyClient(cfg.opensky_client_id, cfg.opensky_client_secret.get_secret_value())
     pub = Publisher(make_producer(), TOPIC_ADSB)
