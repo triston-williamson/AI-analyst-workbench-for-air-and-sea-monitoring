@@ -9,6 +9,12 @@ draft cited intelligence-style reports that a human must approve.
 
 [![CI](https://github.com/triston-williamson/AI-analyst-workbench-for-air-and-sea-monitoring/actions/workflows/ci.yml/badge.svg)](https://github.com/triston-williamson/AI-analyst-workbench-for-air-and-sea-monitoring/actions/workflows/ci.yml)
 
+![Watchfloor operator console: a vessel's AIS track goes dark at 0304Z and reappears 35.6 nm away at 0515Z; the alert queue and evidence panel are on the right](docs/images/console-went-dark.jpg)
+
+*Live Baltic data. A vessel stops transmitting AIS at 0304Z and reappears 35.6 nm away at
+0515Z (dotted segment). The analyst sees why it was flagged, the cited sensor records, and the
+audit history, then approves or rejects it.*
+
 ## Why
 
 In the Baltic Sea, AIS gaps and ship-to-ship transfers are linked to sanctions evasion and to
@@ -41,9 +47,25 @@ aisstream (AIS) ─┘     └─► dead-letter (rejected input) └─► Dash
 | 1 | Kafka ingest (ADS-B + AIS), Snowflake sink, live map | ✅ built |
 | 2 | Detection: AIS gaps, loitering, ship-to-ship rendezvous, aircraft orbits, ML anomaly scoring, vessel-type context, alerts on map | ✅ built |
 | 3 | Analyst agent, OFAC sanctions screening, grounding loop | 📋 |
-| 4 | Alert queue, report approval, metrics page | 📋 |
+| 4 | Operator console: alert queue, evidence trails, approve/reject with audit, replay, heatmaps, system health | ✅ built (metrics page 📋) |
 
 Requirements and how each is verified are listed in [DESIGN.md §4](docs/DESIGN.md#4-requirements-and-traceability).
+
+## Operator console
+
+| Feature | What it shows |
+|---|---|
+| **Alert queue** | Alerts ranked by score, filterable by rule and review status. Click to fly the map to it. |
+| **Evidence trails** | *Went dark:* track, dotted gap, "went dark" / "reappeared" times. *Ship meeting:* both tracks converging. *Circling:* the orbit. Click any ship for its last 2 h. |
+| **Alert detail** | Plain-language reason, vessel identity (name, type, IMO), the cited sensor records with raw payload, audit history. |
+| **Approve / Reject** | Analyst decision with a note, written to `OPS.ALERTS` and the hash-chained audit log; can be reopened. |
+| **Vessel display** | Colour by ship type (tanker, cargo, passenger, working craft, ...) with heading leaders whose length shows speed; stationary vessels have none. |
+| **Replay** | Scrub or play back the collected history in 10-minute steps. |
+| **Heatmaps** | Traffic density (shipping lanes) and where vessels went dark. |
+| **Undersea infrastructure** | Pipelines (incl. Nord Stream 1/2, Balticconnector) and power/telecom cables from EMODnet. |
+| **System health** | Live tracks, messages/min, sensor-to-warehouse latency, data freshness, rejected records, detector heartbeat. |
+
+Times are shown in Zulu (UTC) date-time groups, e.g. `221432Z NOV 26`.
 
 ## Quick start (Windows / PowerShell)
 
@@ -94,7 +116,7 @@ src/watchfloor/
   detect/      rules (gap, loiter, rendezvous, orbit), ML scoring, port zones, runner
   agent/       LLM analyst (Phase 3)
   guardrails/  hash-chained audit log, citation grounding checker
-  dashboard/   Dash operator console
+  dashboard/   operator console: app (layout/callbacks), data (queries), figures (map drawing)
 docs/DESIGN.md requirements, architecture, Responsible AI mapping, risks
 ```
 
@@ -103,3 +125,5 @@ docs/DESIGN.md requirements, architecture, Responsible AI mapping, risks
 - [OpenSky Network](https://opensky-network.org): ADS-B state vectors (non-commercial use)
 - [aisstream.io](https://aisstream.io): live AIS over websocket
 - [OFAC SDN list](https://sanctionslist.ofac.treas.gov): sanctions screening (Phase 3)
+- [EMODnet Human Activities](https://emodnet.ec.europa.eu/en/human-activities): pipelines and
+  cables (EU open data). Refresh with `python scripts/fetch_overlays.py`.

@@ -83,3 +83,33 @@ def test_ais_message_maps_and_handles_not_available_sentinels():
 
 def test_non_position_ais_message_ignored():
     assert message_to_record({"MessageType": "ShipStaticData"}, "{}") is None
+
+
+def test_sink_parses_mixed_iso_timestamps():
+    """Regression: the sink crashed when a batch mixed '...:26.123456Z' and '...:26Z'."""
+    from watchfloor.load.snowflake_sink import flush
+
+    class FakeConn:
+        pass
+
+    rows = [
+        {"OBSERVED_AT": "2026-11-22T04:59:25.501234Z", "INGESTED_AT": "2026-11-22T04:59:27Z"},
+        {"OBSERVED_AT": "2026-11-22T04:59:26Z", "INGESTED_AT": "2026-11-22T04:59:27.9Z"},
+    ]
+    captured = {}
+
+    def fake_write_pandas(conn, df, **kw):
+        captured["df"] = df
+        return True, 1, len(df), None
+
+    import watchfloor.load.snowflake_sink as sink
+
+    original = sink.write_pandas
+    sink.write_pandas = fake_write_pandas
+    try:
+        n = flush(FakeConn(), {"ais.positions": list(rows)})
+    finally:
+        sink.write_pandas = original
+    assert n == 2
+    assert str(captured["df"].OBSERVED_AT.dtype).startswith("datetime64")
+    assert captured["df"].OBSERVED_AT.iloc[1].second == 26

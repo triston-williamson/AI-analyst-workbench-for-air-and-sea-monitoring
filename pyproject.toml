@@ -37,7 +37,7 @@ wf-dashboard = "watchfloor.dashboard.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-watchfloor = ["sql/*.sql"]
+watchfloor = ["sql/*.sql", "dashboard/data/*.json", "dashboard/assets/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

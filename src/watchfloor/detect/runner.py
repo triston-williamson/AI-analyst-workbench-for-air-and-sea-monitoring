@@ -288,7 +288,7 @@ def apply_writes(conn, rows: list[dict]) -> None:
         return
     df = pd.DataFrame(rows)
     for col in ("START_AT", "END_AT"):
-        df[col] = pd.to_datetime(df[col], utc=True)
+        df[col] = pd.to_datetime(df[col], utc=True, format="ISO8601")
     ok, *_ = write_pandas(
         conn,
         df,

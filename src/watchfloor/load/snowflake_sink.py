@@ -60,7 +60,9 @@ def flush(conn, buffers: dict[str, list[dict]]) -> int:
             df["LOADED_AT"] = pd.Timestamp.now(tz="UTC")
         for col in ("OBSERVED_AT", "INGESTED_AT", "REJECTED_AT", "LOADED_AT"):
             if col in df:
-                df[col] = pd.to_datetime(df[col], utc=True)
+                # format="ISO8601": records mix "...:26.123456Z" and "...:26Z" (whole
+                # seconds). Inferring one format from the first row crashed the sink.
+                df[col] = pd.to_datetime(df[col], utc=True, format="ISO8601")
         ok, _, nrows, _ = write_pandas(
             conn,
             df,
