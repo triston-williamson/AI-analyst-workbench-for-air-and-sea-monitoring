@@ -42,6 +42,8 @@ _RANGES = (
 SERVICE_TYPES = frozenset({30, 31, 32, 34, 36, 37, 50, 51, 52, 53, 54, 55, 58})
 
 TANKER_TYPES = frozenset(range(80, 90))
+# Ferries and high-speed craft berth side by side at terminals; they do not do cargo transfers.
+PASSENGER_TYPES = frozenset(range(40, 50)) | frozenset(range(60, 70))
 CARGO_TYPES = frozenset(range(70, 80))
 
 
@@ -62,6 +64,10 @@ def is_service(code: int | None) -> bool:
 
 def is_tanker(code: int | None) -> bool:
     return code in TANKER_TYPES
+
+
+def is_passenger(code: int | None) -> bool:
+    return code in PASSENGER_TYPES
 
 
 def is_cargo_or_tanker(code: int | None) -> bool:

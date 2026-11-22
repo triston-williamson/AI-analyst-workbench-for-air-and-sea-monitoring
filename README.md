@@ -15,6 +15,11 @@ draft cited intelligence-style reports that a human must approve.
 0515Z (dotted segment). The analyst sees why it was flagged, the cited sensor records, and the
 audit history, then approves or rejects it.*
 
+![A tanker and a cargo ship converge and lie 20 m apart outside Gothenburg; the alert explains the ship-to-ship transfer pattern and lists both IMO numbers](docs/images/console-tanker-alongside.jpg)
+
+*Ship-to-ship detection after tuning on live data (129 alerts → 7): a tanker lies 0.011 nm
+alongside a cargo ship outside Gothenburg. Both tracks converge on the meeting point.*
+
 ## Why
 
 In the Baltic Sea, AIS gaps and ship-to-ship transfers are linked to sanctions evasion and to
