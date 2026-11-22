@@ -50,6 +50,14 @@
     }, 60);
   });
 
+  // "Show on map" in the reports list (below the console): bring the map back into view.
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest("button[id]");
+    if (btn && btn.id.indexOf('"report-open"') !== -1) {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  });
+
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
     var t = e.target;

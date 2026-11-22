@@ -247,8 +247,21 @@ def latest_report(alert_id: str) -> dict | None:
     return row
 
 
-def reported_alert_ids() -> list[str]:
-    return _query("SELECT DISTINCT ALERT_ID FROM OPS.REPORTS").ALERT_ID.tolist()
+ALL_REPORTS_SQL = """
+SELECT r.ALERT_ID, r.DRAFTED_AT, r.MODEL, r.DRAFT_MARKDOWN, r.GROUNDING_SCORE,
+       r.GROUNDING_PASSED, a.RULE, a.TRACK_TYPE, a.TRACK_ID, a.SCORE, a.STATUS, a.START_AT,
+       a.END_AT, TO_JSON(a.DETAILS) AS DETAILS
+FROM OPS.REPORTS r
+LEFT JOIN OPS.ALERTS a ON a.ALERT_ID = r.ALERT_ID
+QUALIFY ROW_NUMBER() OVER (PARTITION BY r.ALERT_ID ORDER BY r.DRAFTED_AT DESC) = 1
+ORDER BY r.DRAFTED_AT DESC
+LIMIT %(limit)s
+"""
+
+
+def all_reports(limit: int = 100) -> pd.DataFrame:
+    """The latest report for each alert, newest first, with the alert it is about."""
+    return _query(ALL_REPORTS_SQL, {"limit": limit})
 
 
 # --------------------------------------------------------------------------- system health
@@ -297,3 +310,7 @@ def audit_history(alert_id: str, path: str | None = None) -> list[dict]:
                 if entry.get("details", {}).get("alert_id") == alert_id:
                     out.append(entry)
     return sorted(out, key=lambda e: e["ts"])
+
+
+def reported_alert_ids() -> list[str]:
+    return _query("SELECT DISTINCT ALERT_ID FROM OPS.REPORTS").ALERT_ID.tolist()

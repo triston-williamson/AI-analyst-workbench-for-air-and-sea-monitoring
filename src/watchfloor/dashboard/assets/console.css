@@ -17,7 +17,11 @@
 html, body { margin: 0; background: var(--bg); color: var(--text);
   font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px; }
 
-.console { height: 100vh; display: flex; flex-direction: column; }
+.console { min-height: 100vh; display: flex; flex-direction: column; }
+/* First screen: banner, header, health strip and the map/queue fill the window (less the
+   sticky bottom banner); the AI reports list follows below. */
+.console > .body { flex: none; height: calc(100vh - var(--chrome, 160px)); }
+.banner.bottom { position: sticky; bottom: 0; z-index: 10; }
 
 .banner { background: var(--banner); color: #fff; text-align: center; font-weight: 700;
   letter-spacing: 1.5px; font-size: 11px; padding: 3px 0; flex: none; }
@@ -116,3 +120,26 @@ details pre { white-space: pre-wrap; word-break: break-all; font-size: 10px; col
   margin: 10px 0 4px; }
 .report ul { padding-left: 18px; margin: 4px 0; }
 .report p { margin: 4px 0; }
+
+/* AI report badges and the reports panel under the map */
+.badge.AI { background: #1d3550; color: #9fd0ff; }
+.badge.AI.escalate { background: #5a1f1e; color: #ffb3b0; }
+.badge.AI.monitor { background: #4d3b12; color: #ffd68a; }
+.badge.AI.dismiss { background: #26303c; color: #b8c4d2; }
+.reports { flex: none; border-top: 2px solid var(--line); background: var(--panel);
+  min-height: 40vh; }
+.reports > summary { cursor: pointer; padding: 10px 12px 6px; font-size: 12px; letter-spacing: 2px;
+  color: var(--muted); font-weight: 700; }
+.reports .report-filter { padding: 0 12px 6px; }
+.reports .report-filter label { color: var(--text); margin-right: 10px; cursor: pointer; }
+.reports .report-filter input { accent-color: var(--accent); margin-right: 4px; }
+.reports-list { border-top: 1px solid var(--line); }
+.rep-item { border-bottom: 1px solid var(--line); border-left: 4px solid; }
+.rep-item > summary { cursor: pointer; padding: 7px 12px; display: flex; gap: 10px;
+  align-items: center; font-weight: 600; }
+.rep-item > summary:hover { background: var(--panel-2); }
+.rep-item[open] > summary { background: #1c2430; }
+.rep-who { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.rep-body { padding: 4px 12px 10px; max-width: 980px; }
+.rep-head { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
