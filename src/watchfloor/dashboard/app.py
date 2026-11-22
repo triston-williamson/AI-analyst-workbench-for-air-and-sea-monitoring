@@ -55,6 +55,17 @@ WHERE LAT IS NOT NULL
 def describe_alert(rule: str, details_json: str) -> str:
     """One-line human summary for the map hover."""
     d = json.loads(details_json or "{}")
+    who = " + ".join(
+        f"{n} ({t})"
+        for n, t in zip(d.get("vessel_names", []), d.get("vessel_types", []), strict=False)
+    )
+    text = _describe_rule(rule, d)
+    if d.get("tanker_pair"):
+        text = "TANKER PAIR - " + text
+    return f"{who}<br>{text}" if who else text
+
+
+def _describe_rule(rule: str, d: dict) -> str:
     if rule == "AIS_GAP":
         return f"dark {d.get('gap_hours')} h, moved {d.get('distance_nm')} nm"
     if rule == "LOITER":

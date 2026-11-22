@@ -32,7 +32,7 @@ import pandas as pd
 from snowflake.connector.pandas_tools import write_pandas
 
 from watchfloor.config import get_settings
-from watchfloor.detect import ml, rules
+from watchfloor.detect import ml, rules, ship_types
 from watchfloor.detect.ports import in_port
 from watchfloor.detect.rules import Alert, Point
 from watchfloor.guardrails.audit import AuditLog
@@ -42,7 +42,9 @@ log = logging.getLogger("detect")
 
 ALERT_NAMESPACE = uuid.UUID("6f1c2d1e-9a51-4c4e-8f0e-7c3b3c1a9e10")
 # v2: moored-status and crowd filters for RENDEZVOUS/LOITER, expanded port list.
-DETECTOR_VERSION = "2"
+# v3: AIS ship type: service craft excluded from LOITER/RENDEZVOUS/ML; tanker pairs boosted.
+DETECTOR_VERSION = "3"
+TANKER_PAIR_BOOST = 0.3
 STORM_LIMIT = 50
 
 
@@ -74,6 +76,10 @@ FROM RAW.AIRCRAFT_POSITIONS
 WHERE OBSERVED_AT > DATEADD(hour, -%(hours)s, CURRENT_TIMESTAMP())
   AND NOT ON_GROUND
 QUALIFY ROW_NUMBER() OVER (PARTITION BY RECORD_ID ORDER BY LOADED_AT) = 1
+"""
+IDENTITY_SQL = """
+SELECT TO_VARCHAR(MMSI), SHIP_TYPE, SHIP_NAME, IMO
+FROM CORE.VESSEL_IDENTITY
 """
 EXISTING_SQL = """
 SELECT ALERT_ID, RULE, TRACK_ID, START_AT, END_AT
@@ -129,23 +135,79 @@ def load_points(cur, sql: str, hours: int) -> list[Point]:
     ]
 
 
-def detect(vessels: list[Point], aircraft: list[Point], t: Thresholds) -> list[Alert]:
+@dataclass(frozen=True)
+class Identity:
+    ship_type: int | None
+    name: str | None = None
+    imo: int | None = None
+
+
+def load_identities(cur) -> dict[str, Identity]:
+    return {
+        r[0]: Identity(ship_type=r[1], name=r[2], imo=r[3])
+        for r in cur.execute(IDENTITY_SQL).fetchall()
+    }
+
+
+def _type_of(identities: dict[str, Identity], mmsi: str) -> int | None:
+    ident = identities.get(mmsi)
+    return ident.ship_type if ident else None
+
+
+def enrich(alert: Alert, identities: dict[str, Identity]) -> Alert:
+    """Attach self-reported vessel identity to vessel alerts, and boost tanker-tanker meetings.
+
+    Two tankers stopped side by side at sea is the classic ship-to-ship oil transfer pattern
+    used to obscure cargo origin, so it ranks above, say, two cargo ships waiting together.
+    """
+    if alert.track_type != "VESSEL" or not identities:
+        return alert
+    mmsis = alert.track_id.split("|")
+    types = [_type_of(identities, m) for m in mmsis]
+    alert.details["vessel_types"] = [ship_types.label(t) for t in types]
+    # One entry per vessel, aligned with vessel_types; fall back to the MMSI when unnamed.
+    alert.details["vessel_names"] = [
+        (identities[m].name if m in identities and identities[m].name else f"MMSI {m}")
+        for m in mmsis
+    ]
+    imos = [identities[m].imo for m in mmsis if m in identities and identities[m].imo]
+    if imos:
+        alert.details["imo_numbers"] = imos
+    if alert.rule == "RENDEZVOUS" and all(ship_types.is_tanker(t) for t in types):
+        alert.details["tanker_pair"] = True
+        alert.score = round(min(1.0, alert.score + TANKER_PAIR_BOOST), 3)
+    return alert
+
+
+def detect(
+    vessels: list[Point],
+    aircraft: list[Point],
+    t: Thresholds,
+    identities: dict[str, Identity] | None = None,
+) -> list[Alert]:
+    identities = identities or {}
+    # Harbour/working craft (pilots, tugs, SAR, fishing, pleasure) do loiter and come
+    # alongside other ships as their job. They are left out of the behaviour rules and the ML
+    # baseline, but kept for AIS_GAP: fishing vessels going dark is itself a known red flag.
+    service = {m for m, ident in identities.items() if ship_types.is_service(ident.ship_type)}
+    working = [p for p in vessels if p.track_id not in service]
+
     alerts: list[Alert] = []
     alerts += rules.find_ais_gaps(vessels, min_gap=t.ais_gap, in_port=in_port)
     alerts += rules.find_loitering(
-        vessels, radius_nm=t.loiter_radius_nm, min_duration=t.loiter_min, in_port=in_port
+        working, radius_nm=t.loiter_radius_nm, min_duration=t.loiter_min, in_port=in_port
     )
     alerts += rules.find_rendezvous(
-        vessels,
+        working,
         max_distance_nm=t.rendezvous_distance_nm,
         max_speed_kts=t.rendezvous_max_speed_kts,
         min_duration=t.rendezvous_min,
         in_port=in_port,
     )
     alerts += rules.find_orbits(aircraft, min_turn_deg=t.orbit_min_turn_deg)
-    alerts += ml.score_tracks(vessels, "VESSEL", top_k=t.ml_top_k)
+    alerts += ml.score_tracks(working, "VESSEL", top_k=t.ml_top_k)
     alerts += ml.score_tracks(aircraft, "AIRCRAFT", top_k=t.ml_top_k)
-    return alerts
+    return [enrich(a, identities) for a in alerts]
 
 
 def _overlaps(a_start, a_end, b_start, b_end) -> bool:
@@ -252,9 +314,11 @@ def run_once(hours: int, dry_run: bool, thresholds: Thresholds, audit: AuditLog 
         t0 = time.monotonic()
         vessels = load_points(cur, VESSEL_SQL, hours)
         aircraft = load_points(cur, AIRCRAFT_SQL, hours)
-        alerts = detect(vessels, aircraft, thresholds)
+        identities = load_identities(cur)
+        alerts = detect(vessels, aircraft, thresholds, identities)
         summary = {
             "vessel_points": len(vessels),
+            "vessels_with_type": sum(1 for m in {p.track_id for p in vessels} if m in identities),
             "aircraft_points": len(aircraft),
             "alerts": len(alerts),
             "by_rule": {},

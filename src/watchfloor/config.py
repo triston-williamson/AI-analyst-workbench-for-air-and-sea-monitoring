@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # Kafka topic names - one place so producers and consumers can't drift.
 TOPIC_ADSB = "adsb.positions"
 TOPIC_AIS = "ais.positions"
+TOPIC_AIS_STATIC = "ais.static"
 TOPIC_DEAD_LETTER = "ingest.dead_letter"
 
 

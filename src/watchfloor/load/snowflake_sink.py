@@ -18,7 +18,13 @@ import pandas as pd
 from kafka import KafkaConsumer
 from snowflake.connector.pandas_tools import write_pandas
 
-from watchfloor.config import TOPIC_ADSB, TOPIC_AIS, TOPIC_DEAD_LETTER, get_settings
+from watchfloor.config import (
+    TOPIC_ADSB,
+    TOPIC_AIS,
+    TOPIC_AIS_STATIC,
+    TOPIC_DEAD_LETTER,
+    get_settings,
+)
 from watchfloor.load.snowflake_conn import connect
 
 log = logging.getLogger("sink")
@@ -27,6 +33,7 @@ log = logging.getLogger("sink")
 ROUTES = {
     TOPIC_ADSB: ("RAW", "AIRCRAFT_POSITIONS"),
     TOPIC_AIS: ("RAW", "VESSEL_POSITIONS"),
+    TOPIC_AIS_STATIC: ("RAW", "VESSEL_STATIC"),
     TOPIC_DEAD_LETTER: ("OPS", "REJECTED_RECORDS"),
 }
 BATCH_SIZE = 2000

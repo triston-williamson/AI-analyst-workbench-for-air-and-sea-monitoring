@@ -80,3 +80,48 @@ class VesselPosition(TrackPoint):
     @classmethod
     def _ais_heading_unavailable(cls, v):
         return None if v == 511 else v
+
+
+class VesselStatic(BaseModel):
+    """AIS static/voyage data (message 5, or message 24 part B): who the vessel says it is.
+
+    Self-reported and sometimes wrong; used to give detectors context, not as ground truth.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    record_id: str
+    source: Literal["aisstream"] = "aisstream"
+    observed_at: datetime
+    ingested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    mmsi: int = Field(ge=100_000_000, le=999_999_999)
+    ship_type: int = Field(ge=1, le=99)
+    imo: int | None = Field(default=None, ge=1_000_000, le=9_999_999)
+    call_sign: str | None = Field(default=None, max_length=10)
+    ship_name: str | None = Field(default=None, max_length=64)
+    destination: str | None = Field(default=None, max_length=32)
+    length_m: float | None = Field(default=None, gt=0, le=500)
+    beam_m: float | None = Field(default=None, gt=0, le=80)
+    draught_m: float | None = Field(default=None, gt=0, le=30)
+    raw_payload: str
+
+    @field_validator("imo", "length_m", "beam_m", "draught_m", mode="before")
+    @classmethod
+    def _zero_means_unavailable(cls, v):
+        return None if v in (0, 0.0) else v
+
+    @field_validator("call_sign", "ship_name", "destination", mode="before")
+    @classmethod
+    def _blank_means_unavailable(cls, v):
+        if isinstance(v, str):
+            v = v.replace("@", "").strip()  # AIS pads text fields with '@'
+        return v or None
+
+    @field_validator("observed_at")
+    @classmethod
+    def _not_in_future(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=UTC)
+        if (v - datetime.now(UTC)).total_seconds() > 300:
+            raise ValueError("observed_at is in the future")
+        return v
