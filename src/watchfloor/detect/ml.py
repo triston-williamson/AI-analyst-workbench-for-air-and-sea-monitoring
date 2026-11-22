@@ -39,11 +39,18 @@ class TrackFeatures:
     values: dict[str, float]
 
 
-def track_features(track_id: str, pts: list[Point]) -> TrackFeatures | None:
-    if len(pts) < 5:
+def track_features(
+    track_id: str, pts: list[Point], min_points: int = 5, min_hours: float = 0.0
+) -> TrackFeatures | None:
+    """Kinematic summary of one track, or None if there's too little of it to judge.
+
+    Short tracks make every feature extreme (a 10-minute track of 30 reports has a huge
+    report rate and any wobble is a huge turn rate), so they are excluded, not scored.
+    """
+    if len(pts) < max(min_points, 5):
         return None
     duration_h = (pts[-1].observed_at - pts[0].observed_at).total_seconds() / 3600
-    if duration_h <= 0:
+    if duration_h <= 0 or duration_h < min_hours:
         return None
 
     steps = [haversine_nm(a.lat, a.lon, b.lat, b.lon) for a, b in zip(pts, pts[1:], strict=False)]
@@ -87,9 +94,21 @@ def score_tracks(
     min_tracks: int = 30,
     min_percentile: float = 0.98,
     random_state: int = 0,
+    min_points: int = 5,
+    min_hours: float = 0.0,
+    min_anomaly_score: float = 0.0,
 ) -> list[Alert]:
-    """Return ML_ANOMALY alerts for the most unusual tracks (at most ``top_k``)."""
-    feats = [f for tid, pts in group_tracks(points).items() if (f := track_features(tid, pts))]
+    """Return ML_ANOMALY alerts for the most unusual tracks (at most ``top_k``).
+
+    A track must clear both a relative bar (``min_percentile`` of this picture) and an absolute
+    one (``min_anomaly_score``, Isolation Forest's score where ~0.5 is ordinary), so a quiet
+    picture doesn't still produce its "top k" every pass.
+    """
+    feats = [
+        f
+        for tid, pts in group_tracks(points).items()
+        if (f := track_features(tid, pts, min_points=min_points, min_hours=min_hours))
+    ]
     if len(feats) < min_tracks:
         return []  # too few tracks for "unusual" to mean anything
 
@@ -111,7 +130,7 @@ def score_tracks(
     order = np.argsort(-raw)
     alerts: list[Alert] = []
     for idx in order[:top_k]:
-        if percentile[idx] < min_percentile:
+        if percentile[idx] < min_percentile or raw[idx] < min_anomaly_score:
             break
         f = feats[idx]
         drivers = sorted(

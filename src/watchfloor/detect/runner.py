@@ -45,7 +45,10 @@ ALERT_NAMESPACE = uuid.UUID("6f1c2d1e-9a51-4c4e-8f0e-7c3b3c1a9e10")
 # v3: AIS ship type: service craft excluded from LOITER/RENDEZVOUS/ML; tanker pairs boosted.
 # v4: RENDEZVOUS limited to ships capable of ship-to-ship transfer (class A, >= 50 m, not
 #     passenger) lying alongside (<= 0.15 nm). Tuned on 129 live v3 alerts; see DESIGN.md.
-DETECTOR_VERSION = "4"
+# v5: ML baseline = merchant ships at sea: same vessel pool as v4 RENDEZVOUS, positions in
+#     port zones dropped, >= 2 h / 20 points per track, top 5 above an absolute score.
+#     Tuned on 43 live v4 alerts; see DESIGN.md.
+DETECTOR_VERSION = "5"
 TANKER_PAIR_BOOST = 0.3
 TANKER_CARGO_BOOST = 0.2  # bunkering or cargo transfer alongside a cargo ship
 UNKNOWN_IDENTITY_PENALTY = 0.2  # neither vessel has ever said what it is: less to go on
@@ -66,7 +69,12 @@ class Thresholds:
     rendezvous_max_speed_kts: float = 3.0
     rendezvous_min: timedelta = timedelta(minutes=30)
     orbit_min_turn_deg: float = 720.0
-    ml_top_k: int = 10
+    ml_top_k: int = 5
+    ml_min_percentile: float = 0.99
+    ml_min_anomaly_score: float = 0.65
+    ml_vessel_min_hours: float = 2.0
+    ml_aircraft_min_hours: float = 0.5
+    ml_min_points: int = 20
 
 
 VESSEL_SQL = """
@@ -90,6 +98,14 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY RECORD_ID ORDER BY LOADED_AT) = 1
 IDENTITY_SQL = """
 SELECT TO_VARCHAR(MMSI), SHIP_TYPE, SHIP_NAME, IMO, LENGTH_M
 FROM CORE.VESSEL_IDENTITY
+"""
+# Names from position reports, for vessels that never sent static data (naval vessels often
+# don't): the position messages still carry the name.
+POSITION_NAMES_SQL = """
+SELECT TO_VARCHAR(MMSI), MAX_BY(SHIP_NAME, OBSERVED_AT)
+FROM RAW.VESSEL_POSITIONS
+WHERE OBSERVED_AT > DATEADD(hour, -24, CURRENT_TIMESTAMP()) AND SHIP_NAME IS NOT NULL
+GROUP BY 1
 """
 EXISTING_SQL = """
 SELECT ALERT_ID, RULE, TRACK_ID, START_AT, END_AT
@@ -155,10 +171,18 @@ class Identity:
 
 
 def load_identities(cur) -> dict[str, Identity]:
-    return {
+    ids = {
         r[0]: Identity(ship_type=r[1], name=r[2], imo=r[3], length_m=r[4])
         for r in cur.execute(IDENTITY_SQL).fetchall()
     }
+    for mmsi, name in cur.execute(POSITION_NAMES_SQL).fetchall():
+        if mmsi not in ids and name:
+            ids[mmsi] = Identity(ship_type=None, name=name)  # name only: type/size unknown
+    return ids
+
+
+def _knows_what_it_is(ident: Identity | None) -> bool:
+    return ident is not None and (ident.ship_type is not None or ident.length_m is not None)
 
 
 def _type_of(identities: dict[str, Identity], mmsi: str) -> int | None:
@@ -197,7 +221,7 @@ def enrich(alert: Alert, identities: dict[str, Identity]) -> Alert:
         ):
             alert.details["tanker_alongside_cargo"] = True
             alert.score = round(min(1.0, alert.score + TANKER_CARGO_BOOST), 3)
-        elif all(m not in identities for m in mmsis):
+        elif not any(_knows_what_it_is(identities.get(m)) for m in mmsis):
             alert.details["identity_unknown"] = True
             alert.score = round(max(0.1, alert.score - UNKNOWN_IDENTITY_PENALTY), 3)
     return alert
@@ -265,8 +289,18 @@ def detect(
     )
     alerts, _ = rules.suppress_recurring_spots(alerts)
     alerts += rules.find_orbits(aircraft, min_turn_deg=t.orbit_min_turn_deg)
-    alerts += ml.score_tracks(working, "VESSEL", top_k=t.ml_top_k)
-    alerts += ml.score_tracks(aircraft, "AIRCRAFT", top_k=t.ml_top_k)
+    # ML baseline: merchant ships at sea. Same transfer-capable pool as RENDEZVOUS (no small
+    # craft, ferries or service vessels), and only positions outside port zones: in live runs
+    # 23 of 38 ML alerts were ships manoeuvring in harbour, which is normal.
+    at_sea = [p for p in working if p.track_id in capable and not in_port(p.lat, p.lon)]
+    ml_args = {
+        "top_k": t.ml_top_k,
+        "min_percentile": t.ml_min_percentile,
+        "min_anomaly_score": t.ml_min_anomaly_score,
+        "min_points": t.ml_min_points,
+    }
+    alerts += ml.score_tracks(at_sea, "VESSEL", min_hours=t.ml_vessel_min_hours, **ml_args)
+    alerts += ml.score_tracks(aircraft, "AIRCRAFT", min_hours=t.ml_aircraft_min_hours, **ml_args)
     return [enrich(a, identities) for a in alerts]
 
 

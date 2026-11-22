@@ -325,3 +325,88 @@ def test_pair_trawlers_are_not_rendezvous():
 def test_kiel_canal_and_kuressaare_are_suppressed():
     assert in_port(54.200, 9.553)
     assert in_port(58.217, 22.505)
+
+
+# ---------------------------------------------------------------- v5 ML tuning
+# Tuned on 43 live ML alerts: 23 of 38 vessel alerts were ships manoeuvring inside port zones,
+# 11 were ferries, a quarter came from tracks under an hour, and every pass added ~10 more.
+def _fleet(n=40, hours=3, seed=7):
+    rnd = random.Random(seed)
+    pts = []
+    for k in range(n):
+        start = (55.5 + rnd.uniform(0, 3), 15 + rnd.uniform(0, 8))
+        pts += transit(
+            f"9000000{k:02d}",
+            start,
+            hours=hours,
+            kts=rnd.uniform(10, 14),
+            heading=rnd.uniform(0, 360),
+            step_min=6,
+        )
+    return pts
+
+
+def _looper(track="999999999", centre=OPEN_SEA, minutes=180):
+    odd = circle(track, centre, radius_nm=0.4, period_min=20, minutes=minutes, step_s=360)
+    return [Point(p.record_id, p.track_id, p.observed_at, p.lat, p.lon, 2.0, None) for p in odd]
+
+
+def test_short_tracks_are_not_scored():
+    pts = transit("900000001", OPEN_SEA, hours=0.5, step_min=1)
+    assert ml.track_features("900000001", pts) is not None
+    assert ml.track_features("900000001", pts, min_hours=2.0) is None
+
+
+def test_absolute_score_floor_stops_a_quiet_picture_producing_top_k():
+    quiet = _fleet()
+    assert ml.score_tracks(quiet, "VESSEL", top_k=5, min_percentile=0.0) != []
+    assert ml.score_tracks(quiet, "VESSEL", top_k=5, min_anomaly_score=0.65) == []
+
+
+def test_looping_merchant_ship_at_sea_still_flagged_under_v5():
+    alerts = ml.score_tracks(
+        _fleet() + _looper(),
+        "VESSEL",
+        top_k=5,
+        min_percentile=0.99,
+        min_anomaly_score=0.6,
+        min_points=20,
+        min_hours=2.0,
+    )
+    assert [a.track_id for a in alerts][:1] == ["999999999"]
+
+
+def test_harbour_manoeuvring_is_not_scored_by_ml():
+    from watchfloor.detect.runner import Thresholds, detect
+
+    in_harbour = _looper(centre=GDANSK)  # same looping track, but inside a port zone
+    flagged = {
+        a.track_id
+        for a in detect(_fleet() + in_harbour, [], Thresholds(), {})
+        if a.rule == "ML_ANOMALY"
+    }
+    assert "999999999" not in flagged
+
+
+def test_ferries_are_not_scored_by_ml():
+    from watchfloor.detect.runner import Identity, Thresholds, detect
+
+    ids = {"999999999": Identity(60, "FERRY", length_m=150)}
+    flagged = {
+        a.track_id
+        for a in detect(_fleet() + _looper(), [], Thresholds(), ids)
+        if a.rule == "ML_ANOMALY"
+    }
+    assert "999999999" not in flagged
+
+
+def test_positive_control_looping_ship_at_sea_is_flagged_by_detect():
+    """Keeps the two tests above honest: at the real thresholds, the same track at sea fires."""
+    from watchfloor.detect.runner import Thresholds, detect
+
+    flagged = {
+        a.track_id
+        for a in detect(_fleet() + _looper(), [], Thresholds(), {})
+        if a.rule == "ML_ANOMALY"
+    }
+    assert "999999999" in flagged
