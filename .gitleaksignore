@@ -1,0 +1,5 @@
+# Reviewed false positives. Each entry is one exact finding (commit:file:rule:line), not a pattern.
+#
+# Initial commit, .env.example line 14: OPENSKY_CLIENT_SECRET was blank; the scanner read the next
+# line (ADSB_POLL_SECONDS=30) as its value. No secret involved. Fixed in later commits.
+5e729edcb6749d0bff28959275a440a6bd4142a4:.env.example:generic-api-key:14
