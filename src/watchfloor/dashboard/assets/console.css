@@ -143,3 +143,9 @@ details pre { white-space: pre-wrap; word-break: break-all; font-size: 10px; col
   white-space: nowrap; }
 .rep-body { padding: 4px 12px 10px; max-width: 980px; }
 .rep-head { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+
+/* Public demo: header note */
+.demo-tag { color: var(--warn); font-size: 12px; border: 1px solid #4d3b12; background: #241c0b;
+  padding: 3px 10px; border-radius: 3px; }
+.demo-tag b { letter-spacing: 1px; }
+.btn:disabled, textarea:disabled { opacity: 0.45; cursor: not-allowed; }

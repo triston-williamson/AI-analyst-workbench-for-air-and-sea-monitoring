@@ -8,6 +8,11 @@ infrastructure overlay; alert queue with filters; alert detail with evidence, au
 Approve / Reject (written to OPS.ALERTS and the hash-chained audit log).
 
 Callbacks stay thin: queries live in ``data.py`` and drawing in ``figures.py``.
+
+Public demo: with ``DEMO_DIR`` set to a snapshot exported by
+``scripts/export_demo_snapshot.py``, the console reads that snapshot instead of Snowflake
+(``demo_data.py``) and is read-only: review and AI report drafting are turned off, in the
+layout and in the callbacks. See docs/DEMO.md.
 """
 
 from __future__ import annotations
@@ -22,11 +27,18 @@ import pandas as pd
 from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
 
 from watchfloor.config import get_settings
-from watchfloor.dashboard import data, figures
+from watchfloor.dashboard import data as live_data
+from watchfloor.dashboard import figures
+from watchfloor.dashboard.demo_data import DemoData
 from watchfloor.guardrails.audit import AuditLog
 from watchfloor.logsetup import configure as configure_logging
 
 log = logging.getLogger("dashboard")
+
+# Public demo: a read-only snapshot on disk instead of Snowflake (see the module docstring).
+DEMO = bool(get_settings().demo_dir)
+data = DemoData(get_settings().demo_dir) if DEMO else live_data
+DEMO_OFF = "Turned off in the public demo, which is a read-only snapshot."
 
 BANNER_TEXT = (
     "UNCLASSIFIED // PUBLIC DATA // DEMONSTRATION SYSTEM - NOT AFFILIATED WITH ANY GOVERNMENT"
@@ -389,6 +401,7 @@ def build_layout() -> html.Div:
                 children=[
                     html.H1("WATCHFLOOR"),
                     html.Span("Maritime & Air Domain Awareness · Baltic Sea", className="sub"),
+                    demo_tag() if DEMO else None,
                     html.Span(id="clock", className="clock"),
                 ],
             ),
@@ -427,7 +440,7 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         Input("review-tick", "data"),
     )
     def refresh(_n, _review):
-        clock = dtg(datetime.now(UTC))
+        clock = f"AS OF {dtg(data.now())}" if DEMO else dtg(data.now())
         try:
             vessels, aircraft = data.live_picture()
             alerts = data.alerts()
@@ -551,7 +564,7 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
                 tr = data.track(a["TRACK_TYPE"], a["TRACK_ID"].split("|"), start, end)
                 key = f"alert:{alert_id}"
             elif track_sel:
-                end = datetime.now(UTC)
+                end = data.now()
                 tr = data.track(track_sel["type"], [track_sel["id"]], end - timedelta(hours=2), end)
                 key = f"track:{track_sel['id']}"
             else:  # nothing selected: the map goes back to the analyst's last view
@@ -796,6 +809,8 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
     def draft_report(n_clicks, alert_id, alerts, tick):
         if not n_clicks or not alert_id:
             return no_update, no_update
+        if DEMO:  # the button isn't shown in the demo; refuse a crafted request too
+            return no_update, DEMO_OFF
         if not agent_configured():
             return (
                 no_update,
@@ -832,7 +847,9 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
     def review(_a, _r, _o, note, alert_id, alerts, tick):
         if not alert_id or not (ctx.triggered and ctx.triggered[0]["value"]):
             return no_update
-        status = {"approve": "APPROVED", "reject": "REJECTED", "reopen": "NEW"}[ctx.triggered_id]
+        if DEMO:  # the buttons are disabled in the demo; refuse a crafted request too
+            return no_update
+        status ={"approve": "APPROVED", "reject": "REJECTED", "reopen": "NEW"}[ctx.triggered_id]
         a = next((x for x in alerts or [] if x["ALERT_ID"] == alert_id), {})
         reviewer = get_settings().analyst_name
         data.set_review(alert_id, status, reviewer, note)
@@ -965,20 +982,23 @@ def alert_detail(a: dict, review: dict | None) -> list:
             placeholder="Note (optional): why approve or reject?",
             value=a.get("REVIEW_NOTE") or "",
             style={"width": "100%", "height": "52px"},
+            disabled=DEMO,
         ),
         html.Div(
             className="decision",
             children=[
-                html.Button("✔ Approve", id="approve", className="btn approve"),
-                html.Button("✖ Reject", id="reject", className="btn reject"),
+                html.Button("✔ Approve", id="approve", className="btn approve", disabled=DEMO),
+                html.Button("✖ Reject", id="reject", className="btn reject", disabled=DEMO),
                 html.Button(
                     "Reopen",
                     id="reopen",
                     className="btn ghost",
                     style={} if decided else {"display": "none"},
+                    disabled=DEMO,
                 ),
             ],
         ),
+        html.Div(DEMO_OFF, className="audit") if DEMO else None,
         html.Div(reviewed, className="msg"),
         html.H4("AI analyst report"),
         report_section(a),
@@ -992,6 +1012,17 @@ def compact_citations(markdown: str) -> str:
     """Show citations as short code tags (first 8 chars) on screen; the stored report keeps
     full IDs for the audit trail."""
     return CITATION_DISPLAY.sub(lambda m: f" `{m.group(1)}:{m.group(2)[:8]}`", markdown)
+
+
+def demo_tag() -> html.Span:
+    """Header note for the public demo: what the snapshot is and what is turned off."""
+    span = f"{dtg(data.start)} to {dtg(data.end)}"
+    return html.Span(
+        [html.B("PUBLIC DEMO"), f" · read-only snapshot of live data, {span}"],
+        className="demo-tag",
+        title="Recorded from the live pipeline. Approve / Reject and AI report drafting are "
+        "turned off; the AI reports shown were drafted by Claude on this data.",
+    )
 
 
 def agent_configured() -> bool:
@@ -1114,15 +1145,22 @@ def report_section(a: dict) -> html.Div:
         id="draft-report",
         className="btn ghost",
         title="Runs the Claude analyst agent on this alert (uses the Claude API).",
+        style={"display": "none"} if DEMO else {},
     )
     status = dcc.Loading(html.Div(id="draft-status", className="msg"), type="dot")
     if rep is None:
-        note = (
-            "No report yet. The analyst agent investigates with read-only tools and drafts a "
-            "cited assessment; you still make the decision."
-            if agent_configured()
-            else "Sign in with `ant auth login` (or set ANTHROPIC_API_KEY) to enable the analyst."
-        )
+        if DEMO:
+            note = (
+                "No AI report for this alert. In the public demo, drafting is turned off; "
+                "the AI REPORTS list below the map has the reports Claude drafted on this data."
+            )
+        elif agent_configured():
+            note = (
+                "No report yet. The analyst agent investigates with read-only tools and drafts "
+                "a cited assessment; you still make the decision."
+            )
+        else:
+            note = "Sign in with `ant auth login` (or set ANTHROPIC_API_KEY) to enable the analyst."
         return html.Div([html.Div(note, className="agent"), button, status])
     passed = bool(rep["GROUNDING_PASSED"])
     badge = html.Span(
@@ -1164,6 +1202,12 @@ def create_app() -> Dash:
     app.layout = build_layout()
     register(app)
     return app
+
+
+def create_server():
+    """WSGI entry point for a production server, e.g. the public demo's container:
+    gunicorn "watchfloor.dashboard.app:create_server()"."""
+    return create_app().server
 
 
 def main() -> None:

@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     snowflake_schema: str = "RAW"
 
     audit_log_path: str = "logs/audit.jsonl"
+    # Public demo: a snapshot folder from scripts/export_demo_snapshot.py. When set, the console
+    # reads it instead of Snowflake and is read-only (no review, no AI drafting).
+    demo_dir: str = ""
     # Name recorded in OPS.ALERTS and the audit log when approving/rejecting in the console.
     analyst_name: str = "analyst"
 
