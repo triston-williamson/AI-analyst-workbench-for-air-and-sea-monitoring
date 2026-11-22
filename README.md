@@ -29,7 +29,7 @@ aisstream (AIS) ─┘     └─► dead-letter (rejected input) └─► Dash
 | Streaming | Kafka (KRaft) in Docker |
 | Warehouse | Snowflake |
 | Validation | Pydantic v2: all feed data is treated as untrusted |
-| Detection | Python and SQL rules, ML scoring planned |
+| Detection | Rule engine (gap, loiter, rendezvous, orbit) + Isolation Forest anomaly scoring |
 | AI | LLM agent with read-only tools, citation grounding check, human-in-the-loop |
 | UI | Plotly Dash |
 | Quality | pytest, ruff, GitHub Actions CI |
@@ -39,7 +39,7 @@ aisstream (AIS) ─┘     └─► dead-letter (rejected input) └─► Dash
 | Phase | Scope | |
 |---|---|---|
 | 1 | Kafka ingest (ADS-B + AIS), Snowflake sink, live map | ✅ built |
-| 2 | Detection: AIS gaps ✅, loitering, rendezvous, orbits, ML scoring | 🚧 |
+| 2 | Detection: AIS gaps, loitering, ship-to-ship rendezvous, aircraft orbits, ML anomaly scoring, alerts on map | ✅ built |
 | 3 | Analyst agent, OFAC sanctions screening, grounding loop | 📋 |
 | 4 | Alert queue, report approval, metrics page | 📋 |
 
@@ -56,7 +56,7 @@ py -m venv .venv
 pip install -e ".[dev]"
 copy .env.example .env      # then fill in your keys
 docker compose up -d        # Kafka on :9092, Kafka UI on http://localhost:8080
-python -m watchfloor.load.setup_snowflake   # one-time: creates warehouse, role, DB, tables
+python -m watchfloor.load.setup_snowflake   # creates warehouse, role, DB, tables; re-run after pulling new migrations
 ```
 
 Then run each piece in its own terminal (or use **Run and Debug → "Run full pipeline"** in VS Code):
@@ -65,8 +65,12 @@ Then run each piece in its own terminal (or use **Run and Debug → "Run full pi
 python -m watchfloor.ingest.adsb_producer   # aircraft -> Kafka
 python -m watchfloor.ingest.ais_producer    # ships -> Kafka
 python -m watchfloor.load.snowflake_sink    # Kafka -> Snowflake
+python -m watchfloor.detect.runner          # detectors every 5 min -> OPS.ALERTS
 python -m watchfloor.dashboard.app          # http://127.0.0.1:8050
 ```
+
+Try the detectors without writing anything: `python -m watchfloor.detect.runner --once --dry-run`.
+Rules such as loitering (3 h) and going dark (2 h) need a few hours of collected data to fire.
 
 Run the tests with `pytest`. Change the area of interest with `AOI_BBOX` in `.env`.
 
@@ -86,8 +90,8 @@ Run the tests with `pytest`. Change the area of interest with `AOI_BBOX` in `.en
 src/watchfloor/
   ingest/      OpenSky + aisstream producers, validation, dead-letter routing
   load/        Kafka -> Snowflake sink, connection, one-time setup
-  sql/         Snowflake DDL (RAW / CORE / OPS schemas)
-  detect/      anomaly rules (AIS gap implemented) and geodesy
+  sql/         Snowflake DDL and versioned migrations (RAW / CORE / OPS schemas)
+  detect/      rules (gap, loiter, rendezvous, orbit), ML scoring, port zones, runner
   agent/       LLM analyst (Phase 3)
   guardrails/  hash-chained audit log, citation grounding checker
   dashboard/   Dash operator console

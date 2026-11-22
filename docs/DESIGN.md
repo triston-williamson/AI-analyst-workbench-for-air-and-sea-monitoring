@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Phase 1 (ingest + storage) in progress |
+| **Status** | Phase 1 (ingest + storage) done; Phase 2 (detection) done |
 | **Classification** | Unclassified. Public data only. |
 | **Default AOI** | Baltic Sea (53.5°N–60.5°N, 9.5°E–30.0°E) |
 
@@ -82,10 +82,12 @@ before it counts as finished work.
 | STO-01 | Persist validated records in Snowflake with Kafka lineage columns | `snowflake_sink`, `001_setup.sql` | Done, needs account |
 | STO-02 | At-least-once delivery; commit offsets only after a successful load | `snowflake_sink.main` | Done |
 | DET-01 | Detect AIS transmission gaps ≥ N hours and score by duration and displacement | `tests/test_detect.py` | Done |
-| DET-02 | Detect loitering within radius R for ≥ T | | Planned |
-| DET-03 | Detect vessel rendezvous (two vessels within D nm at < S kts away from port) | | Planned |
-| DET-04 | Detect aircraft orbits (cumulative turn ≥ 720°) | | Planned |
-| DET-05 | ML anomaly score per track (e.g. Isolation Forest on kinematic features) | | Planned |
+| DET-02 | Detect loitering within radius R for ≥ T, away from port | `tests/test_phase2_detectors.py` | Done |
+| DET-03 | Detect vessel rendezvous (two vessels within D nm at < S kts away from port) | `tests/test_phase2_detectors.py` | Done |
+| DET-04 | Detect aircraft orbits (cumulative turn ≥ 720°) | `tests/test_phase2_detectors.py` | Done |
+| DET-05 | ML anomaly score per track (Isolation Forest on kinematic features), with explanation | `tests/test_phase2_detectors.py` | Done |
+| DET-06 | Suppress port activity for loiter / rendezvous / AIS-gap rules | `tests/test_phase2_detectors.py` | Done |
+| DET-07 | Re-running detection must not duplicate alerts for the same episode | `tests/test_phase2_detectors.py`, live run | Done |
 | AGT-01 | Agent tools are read-only; the agent cannot change alert or report status | | Planned |
 | AGT-02 | Every factual sentence in a draft cites `[rec:<id>]` | `guardrails.grounding` | Checker done |
 | AGT-03 | Citations must reference records supplied to the agent; invented IDs fail | `tests/test_guardrails.py` | Checker done |
@@ -94,9 +96,30 @@ before it counts as finished work.
 | HIL-01 | No report is final without explicit human approval in the console | | Planned |
 | AUD-01 | All agent and human actions are written to a tamper-evident audit log | `tests/test_guardrails.py` | Done |
 | UI-01 | Live map of vessels and aircraft, refreshed every 30 s | `dashboard/app.py` | Done |
-| UI-02 | Alert queue and report review (approve / reject / edit) | | Planned |
+| UI-02 | Alerts on the live map, coloured by rule, with a plain-language reason on hover | `dashboard/app.py`, live run | Done |
+| UI-03 | Alert queue and report review (approve / reject / edit) | | Planned |
 
-## 5. Responsible AI alignment
+## 5. Detection design (Phase 2)
+
+| Rule | Logic | Default thresholds | Known benign look-alikes |
+|---|---|---|---|
+| AIS_GAP | Consecutive reports from one MMSI more than N apart; score = duration and displacement | gap ≥ 2 h | Terrestrial AIS coverage holes far offshore; vessels powering down alongside (port-suppressed) |
+| LOITER | Two-pointer scan: from each anchor point, extend while the track stays within R and reports keep arriving | R = 1 nm, ≥ 3 h | Ships waiting at anchorages outside port limits for a berth |
+| RENDEZVOUS | 10-minute time slots; spatial grid hash finds close pairs per slot (neighbours only, not all pairs); consecutive slots form an episode | ≤ 0.5 nm, ≤ 3 kts, ≥ 30 min | Tugs and pilot boats with their tow; bunkering at designated areas |
+| ORBIT | Signed heading change summed over a sliding window, so S-turns cancel and only sustained circling accumulates | ≥ 720° in ≤ 45 min | Airport holding patterns, survey and training flights |
+| ML_ANOMALY | Isolation Forest over 8 kinematic features per track (speed mean/std/max, path length, straightness, turn rate, max report gap, report rate); robust z-scores name the top 3 drivers | top 10, ≥ 98th percentile, ≥ 30 tracks | Harbour craft (tugs, pilots), which move erratically by design |
+
+- **Thresholds** live in one dataclass (`detect/runner.py: Thresholds`) so they can be tuned
+  without touching detector code.
+- **Port zones** are hand-curated circles around 31 Baltic ports (`detect/ports.py`). The
+  production upgrade is the NGA World Port Index or harbour polygons.
+- **Idempotency.** Detection re-scans a sliding window. An alert whose rule and track overlap an
+  existing alert's time window updates that alert (score, evidence, window) instead of creating a
+  duplicate. Only new alerts are written to the audit log.
+- **Next improvement.** AIS static data (vessel type) would let detectors expect tugs and pilots
+  to move erratically, which removes the largest source of ML false positives seen in live runs.
+
+## 6. Responsible AI alignment
 
 | DoD AI Ethical Principle | How Watchfloor addresses it |
 |---|---|
@@ -110,20 +133,22 @@ Mapped to the NIST AI RMF functions: **Govern** (audit log, roles), **Map** (thi
 non-goals and risks), **Measure** (grounding score, false-positive rate per rule), **Manage**
 (human approval, kill switch, dead-letter review).
 
-## 6. Risks
+## 7. Risks
 
 | Risk | Mitigation |
 |---|---|
 | AIS spoofing or junk data | Schema validation, implied-speed checks, dead-letter review |
 | Coverage gaps look like "going dark" | Score uses displacement as well as duration; reviewers see coverage context |
+| Detector false positives (anchorages, harbour craft, holding patterns) | Port zones, conservative thresholds, explanations on every alert, human review |
 | Prompt injection via free-text AIS fields | Tool output passed as data; red-team test cases (AGT-04) |
 | LLM hallucination | Mandatory citations, automated grounding check, human approval |
 | Feed rate limits | Backoff and retry; configurable poll interval |
 
-## 7. Roadmap
+## 8. Roadmap
 
-1. **Phase 1: Ingest and storage.** Kafka, producers, Snowflake sink, live map. *(current)*
-2. **Phase 2: Detection.** Remaining rules, ML scoring, `OPS.ALERTS` writer, port polygons.
+1. **Phase 1: Ingest and storage.** Kafka, producers, Snowflake sink, live map. *(done)*
+2. **Phase 2: Detection.** Loiter, rendezvous and orbit rules, ML scoring, port zones,
+   `OPS.ALERTS` writer, alerts on the map. *(done)*
 3. **Phase 3: Agent.** Tool-calling analyst, OFAC screening, grounding retry loop, evaluation set.
 4. **Phase 4: Console.** Alert queue, report review, audit viewer, metrics page (hallucination
    rate, alert precision, ingest lag).
