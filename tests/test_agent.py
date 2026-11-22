@@ -323,3 +323,13 @@ def test_negative_sanctions_result_is_citable():
     inv = Investigation(ALERT, no_query, None, sdn=())
     out = json.loads(inv.sanctions_check(imo=9999999))
     assert out["matches"] == [] and out["cite_this_check_as"][1:-1] in inv.allowed_ids
+
+
+def test_multi_program_entries_are_cleaned(tmp_path):
+    row = (
+        '40001,"MULTI",vessel,"UKRAINE-EO13662] [RUSSIA-EO14024",-0- ,-0- ,-0- ,-0- ,-0- ,'
+        '"Russia",-0- ,"IMO 9000001"\n'
+    )
+    path = tmp_path / "sdn.csv"
+    path.write_text(row, encoding="utf-8")
+    assert sanctions.parse_sdn_csv(path)[0].program == "UKRAINE-EO13662, RUSSIA-EO14024"

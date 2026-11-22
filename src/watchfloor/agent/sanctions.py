@@ -54,7 +54,12 @@ def parse_sdn_csv(path: Path) -> list[SdnVessel]:
                 SdnVessel(
                     ent_num=clean(row[0]),
                     name=clean(row[1]),
-                    program=clean(row[3]),
+                    # "UKRAINE-EO13662] [RUSSIA-EO14024" -> "UKRAINE-EO13662, RUSSIA-EO14024"
+                    program=", ".join(
+                        x.strip(" []")
+                        for x in re.split(r"\]\s*\[", clean(row[3]))
+                        if x.strip(" []")
+                    ),
                     call_sign=clean(row[5]),
                     flag=clean(row[9]),
                     imo=imo.group(1) if imo else None,
