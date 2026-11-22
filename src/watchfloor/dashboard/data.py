@@ -45,6 +45,15 @@ def _query(sql: str, params: dict | None = None) -> pd.DataFrame:
     raise RuntimeError("unreachable")
 
 
+def run_query(sql: str, params: dict | None = None) -> pd.DataFrame:
+    """Public read access on the shared connection (used by the analyst agent's tools)."""
+    return _query(sql, params)
+
+
+def execute(sql: str, params: dict) -> int:
+    return _execute(sql, params)
+
+
 def _execute(sql: str, params: dict) -> int:
     global _conn
     with _lock:
@@ -214,6 +223,32 @@ def evidence(record_ids: list[str]) -> pd.DataFrame:
     if not record_ids:
         return pd.DataFrame()
     return _query(EVIDENCE_SQL, {"ids": json.dumps(record_ids)})
+
+
+# --------------------------------------------------------------------------- AI reports
+LATEST_REPORT_SQL = """
+SELECT REPORT_ID, DRAFTED_AT, MODEL, DRAFT_MARKDOWN, GROUNDING_SCORE, GROUNDING_PASSED,
+       TO_JSON(UNCITED) AS UNCITED, TO_JSON(UNKNOWN_CITATIONS) AS UNKNOWN_CITATIONS,
+       TOOL_CALLS, ATTEMPTS, INPUT_TOKENS, OUTPUT_TOKENS, STOP_REASON
+FROM OPS.REPORTS
+WHERE ALERT_ID = %(alert_id)s
+ORDER BY DRAFTED_AT DESC
+LIMIT 1
+"""
+
+
+def latest_report(alert_id: str) -> dict | None:
+    df = _query(LATEST_REPORT_SQL, {"alert_id": alert_id})
+    if df.empty:
+        return None
+    row = df.iloc[0].to_dict()
+    for k in ("UNCITED", "UNKNOWN_CITATIONS"):
+        row[k] = json.loads(row[k]) if row.get(k) else []
+    return row
+
+
+def reported_alert_ids() -> list[str]:
+    return _query("SELECT DISTINCT ALERT_ID FROM OPS.REPORTS").ALERT_ID.tolist()
 
 
 # --------------------------------------------------------------------------- system health

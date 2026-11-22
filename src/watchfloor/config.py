@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     # Name recorded in OPS.ALERTS and the audit log when approving/rejecting in the console.
     analyst_name: str = "analyst"
 
+    # --- Phase 3: AI analyst agent (Claude API) ---
+    # Optional here: the SDK also finds ANTHROPIC_API_KEY in the environment or an
+    # `ant auth login` profile.
+    anthropic_api_key: SecretStr = SecretStr("")
+    agent_model: str = "claude-opus-5-5"
+    agent_effort: str = "high"  # low | medium | high | xhigh | max
+
     @field_validator("aoi_bbox", mode="before")
     @classmethod
     def _parse_bbox(cls, v):

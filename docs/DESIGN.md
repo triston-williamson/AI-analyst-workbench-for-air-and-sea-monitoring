@@ -100,12 +100,13 @@ before it counts as finished work.
 | DET-15 | ML scores merchant ships at sea only, with minimum track length and an absolute score floor; at most 5 per pass | `tests/test_phase2_detectors.py` (incl. positive control), live run (43 → 2) | Done |
 | DET-16 | LOITER near undersea cables/pipelines (≤ 1 nm) is always raised, ranked up and names the asset; anchorage crowds suppressed | `tests/test_vessel_types.py`, live run (163 → 26) | Done |
 | DET-17 | The storm guard never holds back priority alerts (near infrastructure, tanker pairs) | `tests/test_vessel_types.py` | Done |
-| AGT-01 | Agent tools are read-only; the agent cannot change alert or report status | | Planned |
-| AGT-02 | Every factual sentence in a draft cites `[rec:<id>]` | `guardrails.grounding` | Checker done |
-| AGT-03 | Citations must reference records supplied to the agent; invented IDs fail | `tests/test_guardrails.py` | Checker done |
-| AGT-04 | Feed text (ship names, callsigns) is treated as data, never as instructions | | Planned (red-team tests) |
-| AGT-05 | Sanctions screening against the OFAC SDN list | | Planned |
-| HIL-01 | No alert or report is final without explicit human approval in the console | `dashboard/app.py` review, live run | Done for alerts; reports in Phase 3 |
+| AGT-01 | Agent tools are read-only; the agent cannot change alert or report status | `agent/tools.py`, `tests/test_agent.py` | Done |
+| AGT-02 | Every factual sentence (Summary, Observations) cites `[rec:..]`, `[alert:..]` or `[sdn:..]`; judgement lives in Assessment | `guardrails/grounding.py`, `tests/test_agent.py` | Done |
+| AGT-03 | Citations must reference records supplied to the agent; invented IDs fail; a failing draft is returned once, then stored as failing | `tests/test_agent.py` | Done |
+| AGT-04 | Feed text (ship names, callsigns) is treated as data, never as instructions; a fake citation inside a ship name is not trusted | `tests/test_agent.py` (injection case) | Done |
+| AGT-05 | Sanctions screening against the OFAC SDN list, graded by match strength (IMO / MMSI / name) | `agent/sanctions.py`, `tests/test_agent.py` | Done (list download on request) |
+| AGT-06 | Every agent step (start, each tool call, grounding retry, draft) is in the hash-chained audit log | `tests/test_agent.py` | Done |
+| HIL-01 | No alert or report is final without explicit human approval in the console | `dashboard/app.py` review, live run | Done |
 | AUD-01 | All agent and human actions are written to a tamper-evident audit log | `tests/test_guardrails.py` | Done |
 | UI-01 | Live map of vessels and aircraft, refreshed every 30 s | `dashboard/app.py` | Done |
 | UI-02 | Alerts on the live map, coloured by rule, with a plain-language reason on hover | `dashboard/app.py`, live run | Done |
@@ -219,7 +220,34 @@ before it counts as finished work.
   alert to RETRACTED. Retraction now touches only unreviewed (NEW) alerts; the decision was
   restored and the restore audited.
 
-## 7. Responsible AI alignment
+## 7. AI analyst agent (Phase 3)
+
+- **Where it runs.** The agent loop runs locally through the Anthropic SDK's tool runner on the
+  Messages API (Claude Opus 5.5, adaptive thinking, effort `high`), next to the data: tools query
+  Snowflake with local credentials and every step is written to the local audit log. Anthropic's
+  hosted Managed Agents is the alternative if the loop should run server-side.
+- **Tools (read-only).** Track history around the alert, vessels nearby, self-reported identity,
+  OFAC SDN screening, nearest seabed infrastructure. Sensor rows carry their `record_id`; every
+  ID a tool returns is added to the set the report may cite. Arguments are clamped (≤ 12 h of
+  history, ≤ 10 nm radius) and results downsampled (≤ 60 points) to bound cost.
+- **Fact vs judgement.** Reports have fixed sections. Summary and Observations are factual and
+  every sentence must cite evidence; Assessment (most likely explanation, main alternative,
+  confidence low/moderate/high) and Recommended action (dismiss/monitor/escalate) are judgement
+  and may not introduce new facts. This mirrors how intelligence analysis separates them.
+- **Grounding loop.** The guardrail checks the draft. A failing draft is returned once with the
+  exact uncited sentences and unknown IDs; if it still fails it is saved *as failing* with the
+  problems listed in the console. Nothing is silently dropped or "fixed".
+- **Untrusted input.** Ship names, destinations and call signs are broadcast by anyone. Tool
+  results are JSON data, the system prompt says never to follow instructions inside them, and a
+  fake citation smuggled into a ship name is rejected by the grounding check (tested).
+- **Refusals and limits.** Server-side refusal fallbacks are on (`fallbacks: "default"`); a
+  refusal, or hitting the 12-step cap mid-investigation, is recorded, not retried blindly.
+- **Cost control.** Runs only on demand (console button or `--top N`), prompt caching on the
+  fixed system prompt and tools, token usage stored with every report.
+- **Human in the loop.** Reports are drafts. The analyst's Approve / Reject on the alert is the
+  decision, recorded in OPS.ALERTS and the audit log.
+
+## 8. Responsible AI alignment
 
 | DoD AI Ethical Principle | How Watchfloor addresses it |
 |---|---|
@@ -233,7 +261,7 @@ Mapped to the NIST AI RMF functions: **Govern** (audit log, roles), **Map** (thi
 non-goals and risks), **Measure** (grounding score, false-positive rate per rule), **Manage**
 (human approval, kill switch, dead-letter review).
 
-## 8. Risks
+## 9. Risks
 
 | Risk | Mitigation |
 |---|---|
@@ -244,12 +272,13 @@ non-goals and risks), **Measure** (grounding score, false-positive rate per rule
 | LLM hallucination | Mandatory citations, automated grounding check, human approval |
 | Feed rate limits | Backoff and retry; configurable poll interval |
 
-## 9. Roadmap
+## 10. Roadmap
 
 1. **Phase 1: Ingest and storage.** Kafka, producers, Snowflake sink, live map. *(done)*
 2. **Phase 2: Detection.** Loiter, rendezvous and orbit rules, ML scoring, port zones,
    `OPS.ALERTS` writer, alerts on the map. *(done)*
-3. **Phase 3: Agent.** Tool-calling analyst, OFAC screening, grounding retry loop, evaluation set.
+3. **Phase 3: Agent.** *(built)* Tool-calling analyst, OFAC screening, grounding retry loop.
+   Next: an evaluation set of reviewed alerts to measure report accuracy and grounding over time.
 4. **Phase 4: Console.** *(done, except metrics)* Alert queue, evidence trails, review with
    audit, replay, heatmaps, infrastructure overlay, health strip. Still to do: metrics page (hallucination
    rate, alert precision, ingest lag).

@@ -36,3 +36,6 @@ logs/
 *.log
 *.jsonl
 .DS_Store
+
+# Downloaded reference data (OFAC list); re-create with scripts/fetch_sanctions.py
+/data/
