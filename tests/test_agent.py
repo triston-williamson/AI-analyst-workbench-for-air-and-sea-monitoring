@@ -432,7 +432,8 @@ def test_aircraft_track_has_altitude_and_flags_repeated_positions():
     assert out["points_returned"] == 2
     assert out["data_quality"]["repeated_position_reports_removed"] == 1
     last = out["points"][-1]
-    assert last["record_id"] == A3 and last["altitude_m"] == 3900 and last["callsign"] == "LOT123"
+    # the kept point is the first report at that time, with the altitude observed there
+    assert last["record_id"] == A2 and last["altitude_m"] == 3200 and last["callsign"] == "LOT123"
     assert "nav_status" not in last
 
 
