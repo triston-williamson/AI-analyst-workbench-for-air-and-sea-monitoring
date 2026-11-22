@@ -396,3 +396,61 @@ def test_sanctions_alerts_get_through_a_storm(sdn):
 def test_agent_may_cite_the_listed_entry():
     alert = dict(ALERT, RULE="SANCTIONS", details={"sdn_entry": "37073"})
     assert "sdn:37073" in Investigation(alert, no_query, None).allowed_ids
+
+
+# ---------------------------------------------------------------- stale aircraft positions
+def aircraft_df():
+    """Three polls: the third repeats the second's position time with a new altitude."""
+    t0 = pd.Timestamp("2026-11-22T02:10:00Z")
+    times = [t0, t0 + pd.Timedelta(seconds=10), t0 + pd.Timedelta(seconds=10)]
+    return pd.DataFrame(
+        {
+            "RECORD_ID": [A1, A2, A3],
+            "OBSERVED_AT": times,
+            "LAT": [54.7, 54.71, 54.71],
+            "LON": [20.5, 20.52, 20.52],
+            "SPEED_KTS": [250.0, 252.0, 260.0],
+            "COURSE_DEG": [80.0, 80.0, 80.0],
+            "NAV_STATUS": [None] * 3,
+            "BARO_ALTITUDE_M": [3000.0, 3200.0, 3900.0],
+            "CALLSIGN": ["LOT123"] * 3,
+            "ON_GROUND": [False] * 3,
+        }
+    )
+
+
+def test_aircraft_track_has_altitude_and_flags_repeated_positions():
+    seen = {}
+
+    def q(sql, params):
+        seen["sql"] = sql
+        return aircraft_df()
+
+    alert = {**ALERT, "TRACK_TYPE": "AIRCRAFT", "TRACK_ID": "48ae01"}
+    out = json.loads(Investigation(alert, q, None).track_history("48ae01"))
+    assert "BARO_ALTITUDE_M" in seen["sql"] and "AIRCRAFT_POSITIONS" in seen["sql"]
+    assert out["points_returned"] == 2
+    assert out["data_quality"]["repeated_position_reports_removed"] == 1
+    last = out["points"][-1]
+    assert last["record_id"] == A3 and last["altitude_m"] == 3900 and last["callsign"] == "LOT123"
+    assert "nav_status" not in last
+
+
+def test_vessel_track_has_no_data_quality_note():
+    out = json.loads(
+        Investigation(ALERT, lambda sql, p: track_df(5), None).track_history("230000001")
+    )
+    assert "data_quality" not in out and "altitude_m" not in out["points"][0]
+
+
+def test_stale_filter_keeps_only_new_observed_positions():
+    from watchfloor.ingest.adsb_producer import StaleFilter
+
+    f = StaleFilter()
+    state = lambda t_pos, t_contact: ["48AE01", "LOT123", "PL", t_pos, t_contact]  # noqa: E731
+    assert f.keep(state(1000, 1002))  # fresh
+    assert not f.keep(state(1000, 1012))  # same position re-sent
+    assert not f.keep(state(1005, 1060))  # position 55 s older than contact
+    assert not f.keep(state(None, 1070))  # no position at all
+    assert f.keep(state(1080, 1081))
+    assert f.dropped == {"no_position_time": 1, "stale": 1, "repeat": 1}

@@ -37,6 +37,15 @@ WHERE {id_col} = %(track_id)s
 QUALIFY ROW_NUMBER() OVER (PARTITION BY RECORD_ID ORDER BY LOADED_AT) = 1
 ORDER BY OBSERVED_AT
 """
+AIRCRAFT_TRACK_SQL = """
+SELECT RECORD_ID, OBSERVED_AT, LAT, LON, SPEED_KTS, COURSE_DEG, NULL AS NAV_STATUS,
+       BARO_ALTITUDE_M, CALLSIGN, ON_GROUND
+FROM RAW.AIRCRAFT_POSITIONS
+WHERE ICAO24 = %(track_id)s
+  AND OBSERVED_AT BETWEEN %(start)s::TIMESTAMP_TZ AND %(end)s::TIMESTAMP_TZ
+QUALIFY ROW_NUMBER() OVER (PARTITION BY RECORD_ID ORDER BY LOADED_AT) = 1
+ORDER BY OBSERVED_AT, LOADED_AT
+"""
 NEARBY_SQL = """
 SELECT TO_VARCHAR(v.MMSI) AS MMSI, v.RECORD_ID, v.OBSERVED_AT, v.LAT, v.LON, v.SPEED_KTS,
        v.NAV_STATUS, COALESCE(i.SHIP_NAME, v.SHIP_NAME) AS NAME, i.SHIP_TYPE, i.LENGTH_M
@@ -92,7 +101,7 @@ class Investigation:
                 results=n,
             )
 
-    def _rows(self, df: pd.DataFrame) -> list[dict]:
+    def _rows(self, df: pd.DataFrame, aircraft: bool = False) -> list[dict]:
         if df.empty:
             return []
         if len(df) > MAX_POINTS:  # evenly downsample, always keeping first and last
@@ -112,6 +121,12 @@ class Investigation:
                     "nav_status": None if pd.isna(r.NAV_STATUS) else int(r.NAV_STATUS),
                 }
             )
+            if aircraft:  # vessels have no altitude; aircraft have no nav status
+                row = rows[-1]
+                row.pop("nav_status")
+                row["altitude_m"] = _num(r.BARO_ALTITUDE_M, 0)
+                row["callsign"] = r.CALLSIGN
+                row["on_ground"] = bool(r.ON_GROUND)
         return rows
 
     # ------------------------------------------------------------------ tool bodies
@@ -126,9 +141,7 @@ class Investigation:
             id_col="ICAO24" if aircraft else "TO_VARCHAR(MMSI)",
         )
         if aircraft:
-            sql = sql.replace(
-                "SPEED_KTS, COURSE_DEG, NAV_STATUS", "SPEED_KTS, COURSE_DEG, NULL AS NAV_STATUS"
-            )
+            sql = AIRCRAFT_TRACK_SQL
         df = self.query(
             sql,
             {
@@ -137,7 +150,21 @@ class Investigation:
                 "end": (self.window_end + timedelta(hours=hours_after)).isoformat(),
             },
         )
-        rows = self._rows(df)
+        quality = None
+        if aircraft and not df.empty:
+            # Several reports with the same position time = the feed re-sent a stale position
+            # while altitude etc. kept changing. Keep one per time and tell the agent.
+            repeats = int(len(df) - df.OBSERVED_AT.nunique())
+            df = df.drop_duplicates(subset="OBSERVED_AT", keep="last")
+            if repeats:
+                quality = {
+                    "repeated_position_reports_removed": repeats,
+                    "meaning": "The feed re-sent the same position and timestamp while other "
+                    "fields (e.g. altitude) changed, so the position was stale, not observed. "
+                    "Gaps and jumps around these times reflect missing position data, not "
+                    "aircraft behaviour.",
+                }
+        rows = self._rows(df, aircraft=aircraft)
         self._log(
             "get_track_history",
             {"track_id": track_id, "hours_before": hours_before, "hours_after": hours_after},
@@ -148,6 +175,7 @@ class Investigation:
                 "track_id": track_id,
                 "points_total": len(df),
                 "points_returned": len(rows),
+                **({"data_quality": quality} if quality else {}),
                 "points": rows,
             }
         )

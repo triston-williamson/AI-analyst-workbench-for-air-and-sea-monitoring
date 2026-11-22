@@ -65,10 +65,44 @@ class OpenSkyClient:
         return resp.json().get("states") or []
 
 
+MAX_POSITION_AGE_S = 30
+
+
+class StaleFilter:
+    """Drop state vectors whose position is not a new observation.
+
+    OpenSky keeps returning an aircraft's *last known* position (with its old ``time_position``)
+    while other fields such as altitude keep updating. Stored as-is, every poll adds a "new"
+    record at the same place and time: in the first live day 33% of aircraft rows were such
+    repeats, which made a climbing airliner look like an aircraft barely moving and led the
+    analyst agent to escalate a false alarm. A position is kept only if it has a timestamp, is
+    at most ``MAX_POSITION_AGE_S`` older than the aircraft's last contact, and is newer than the
+    last position kept for that aircraft.
+    """
+
+    def __init__(self) -> None:
+        self.last_kept: dict[str, int] = {}
+        self.dropped = {"no_position_time": 0, "stale": 0, "repeat": 0}
+
+    def keep(self, s: list) -> bool:
+        icao, t_pos, t_contact = (s[0] or "").lower(), s[3], s[4]
+        if t_pos is None:
+            self.dropped["no_position_time"] += 1
+            return False
+        if t_contact is not None and t_contact - t_pos > MAX_POSITION_AGE_S:
+            self.dropped["stale"] += 1
+            return False
+        if t_pos <= self.last_kept.get(icao, -1):
+            self.dropped["repeat"] += 1
+            return False
+        self.last_kept[icao] = t_pos
+        return True
+
+
 def state_to_record(s: list) -> dict:
     """Map an OpenSky state vector (positional array) to our AircraftPosition fields."""
     raw = json.dumps(s)
-    ts = s[3] or s[4]  # time_position, else last_contact
+    ts = s[3]  # time_position: when the *position* was observed (StaleFilter ensures it's set)
     return {
         "record_id": make_record_id("opensky", raw),
         "observed_at": datetime.fromtimestamp(ts, UTC) if ts else None,
@@ -91,12 +125,15 @@ def main() -> None:
     cfg = get_settings()
     client = OpenSkyClient(cfg.opensky_client_id, cfg.opensky_client_secret.get_secret_value())
     pub = Publisher(make_producer(), TOPIC_ADSB)
+    stale = StaleFilter()
     log.info("Polling OpenSky every %ss for bbox %s", cfg.adsb_poll_seconds, cfg.aoi_bbox)
     while True:
         try:
             for s in client.states(cfg.aoi_bbox):
-                pub.publish(AircraftPosition, state_to_record(s), key=(s[0] or "").lower())
+                if stale.keep(s):
+                    pub.publish(AircraftPosition, state_to_record(s), key=(s[0] or "").lower())
             pub.flush_and_report()
+            log.info("stale positions dropped so far: %s", stale.dropped)
         except httpx.HTTPStatusError as exc:
             log.warning("OpenSky HTTP %s - backing off", exc.response.status_code)
             time.sleep(60)
