@@ -1,4 +1,4 @@
-"""Operator console: live map of vessels and aircraft in the AOI.
+"""Operator console: live map of vessels, aircraft and detector alerts in the AOI.
 
     python -m watchfloor.dashboard.app      ->  http://127.0.0.1:8050
 
@@ -7,6 +7,7 @@ Phase 4 adds the alert queue and the report approve/reject panel.
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pandas as pd
@@ -19,6 +20,16 @@ from watchfloor.load.snowflake_conn import connect
 log = logging.getLogger("dashboard")
 
 LOOKBACK_MINUTES = 30
+ALERT_LOOKBACK_HOURS = 24
+
+# Colour per detector rule (high contrast on the dark basemap).
+RULE_COLORS = {
+    "AIS_GAP": "#ffd60a",
+    "LOITER": "#ff9f1c",
+    "RENDEZVOUS": "#ff006e",
+    "ORBIT": "#c77dff",
+    "ML_ANOMALY": "#2ec4b6",
+}
 
 VESSEL_SQL = """
 SELECT MMSI, SHIP_NAME, LAT, LON, SPEED_KTS, COURSE_DEG, OBSERVED_AT
@@ -31,25 +42,56 @@ FROM CORE.AIRCRAFT_LATEST
 WHERE OBSERVED_AT > DATEADD(minute, -%(lookback)s, CURRENT_TIMESTAMP())
   AND NOT ON_GROUND
 """
+ALERTS_SQL = """
+SELECT ALERT_ID, RULE, TRACK_TYPE, TRACK_ID, SCORE, LAT, LON, START_AT, END_AT,
+       TO_JSON(DETAILS) AS DETAILS
+FROM OPS.ALERTS
+WHERE LAT IS NOT NULL
+  AND COALESCE(END_AT, DETECTED_AT) > DATEADD(hour, -%(alert_hours)s, CURRENT_TIMESTAMP())
+  AND STATUS <> 'REJECTED'
+"""
 
 
-def fetch() -> tuple[pd.DataFrame, pd.DataFrame, str | None]:
+def describe_alert(rule: str, details_json: str) -> str:
+    """One-line human summary for the map hover."""
+    d = json.loads(details_json or "{}")
+    if rule == "AIS_GAP":
+        return f"dark {d.get('gap_hours')} h, moved {d.get('distance_nm')} nm"
+    if rule == "LOITER":
+        return f"{d.get('duration_hours')} h within {d.get('radius_nm')} nm"
+    if rule == "RENDEZVOUS":
+        return (
+            f"{d.get('vessel_a')} + {d.get('vessel_b')}: {d.get('duration_minutes')} min, "
+            f"closest {d.get('min_separation_nm')} nm"
+        )
+    if rule == "ORBIT":
+        return f"{d.get('circles')} circles in {d.get('window_minutes')} min"
+    if rule == "ML_ANOMALY":
+        drivers = d.get("top_drivers", [])[:2]
+        return "unusual " + ", ".join(f"{x['feature']} ({x['robust_z']:+}σ)" for x in drivers)
+    return ""
+
+
+def fetch() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str | None]:
     try:
         conn = connect()
         try:
             cur = conn.cursor()
-            params = {"lookback": LOOKBACK_MINUTES}
+            params = {"lookback": LOOKBACK_MINUTES, "alert_hours": ALERT_LOOKBACK_HOURS}
             vessels = cur.execute(VESSEL_SQL, params).fetch_pandas_all()
             aircraft = cur.execute(AIRCRAFT_SQL, params).fetch_pandas_all()
+            alerts = cur.execute(ALERTS_SQL, params).fetch_pandas_all()
         finally:
             conn.close()
-        return vessels, aircraft, None
+        return vessels, aircraft, alerts, None
     except Exception as exc:  # noqa: BLE001 - surface any data error on the console
         log.exception("Snowflake query failed")
-        return pd.DataFrame(), pd.DataFrame(), str(exc)
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), str(exc)
 
 
-def build_map(vessels: pd.DataFrame, aircraft: pd.DataFrame) -> go.Figure:
+def build_map(
+    vessels: pd.DataFrame, aircraft: pd.DataFrame, alerts: pd.DataFrame | None = None
+) -> go.Figure:
     min_lat, min_lon, max_lat, max_lon = get_settings().aoi_bbox
     fig = go.Figure()
     if not vessels.empty:
@@ -76,7 +118,30 @@ def build_map(vessels: pd.DataFrame, aircraft: pd.DataFrame) -> go.Figure:
                 hovertemplate="%{text}<extra></extra>",
             )
         )
+    if alerts is not None and not alerts.empty:
+        for rule, group in alerts.groupby("RULE"):
+            hover = [
+                f"<b>{rule}</b> {row.TRACK_TYPE.lower()} {row.TRACK_ID}<br>"
+                f"score {row.SCORE:.2f} | {describe_alert(rule, row.DETAILS)}"
+                for row in group.itertuples()
+            ]
+            fig.add_trace(
+                go.Scattermap(
+                    lat=group.LAT,
+                    lon=group.LON,
+                    mode="markers",
+                    name=f"{rule} ({len(group)})",
+                    marker={
+                        "size": (10 + 14 * group.SCORE.astype(float)).tolist(),
+                        "color": RULE_COLORS.get(rule, "#ffffff"),
+                        "opacity": 0.85,
+                    },
+                    text=hover,
+                    hovertemplate="%{text}<extra></extra>",
+                )
+            )
     fig.update_layout(
+        uirevision="keep",  # keep the user's pan/zoom across 30 s refreshes
         map={
             "style": "carto-darkmatter",
             "center": {"lat": (min_lat + max_lat) / 2, "lon": (min_lon + max_lon) / 2},
@@ -126,15 +191,16 @@ def create_app() -> Dash:
         Output("map", "figure"), Output("status", "children"), Input("tick", "n_intervals")
     )
     def refresh(_):
-        vessels, aircraft, err = fetch()
+        vessels, aircraft, alerts, err = fetch()
         status = (
             f"Data error: {err[:120]}"
             if err
             else (
-                f"{len(vessels)} vessels | {len(aircraft)} aircraft | last {LOOKBACK_MINUTES} min"
+                f"{len(vessels)} vessels | {len(aircraft)} aircraft (last {LOOKBACK_MINUTES} min)"
+                f" | {len(alerts)} alerts (last {ALERT_LOOKBACK_HOURS} h)"
             )
         )
-        return build_map(vessels, aircraft), status
+        return build_map(vessels, aircraft, alerts), status
 
     return app
 

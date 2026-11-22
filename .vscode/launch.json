@@ -5,9 +5,11 @@
     { "name": "Ingest: AIS (aisstream)", "type": "debugpy", "request": "launch", "module": "watchfloor.ingest.ais_producer", "envFile": "${workspaceFolder}/.env", "cwd": "${workspaceFolder}" },
     { "name": "Load: Kafka -> Snowflake", "type": "debugpy", "request": "launch", "module": "watchfloor.load.snowflake_sink", "envFile": "${workspaceFolder}/.env", "cwd": "${workspaceFolder}" },
     { "name": "Setup: Snowflake objects", "type": "debugpy", "request": "launch", "module": "watchfloor.load.setup_snowflake", "envFile": "${workspaceFolder}/.env", "cwd": "${workspaceFolder}" },
+    { "name": "Detect: rules + ML (every 5 min)", "type": "debugpy", "request": "launch", "module": "watchfloor.detect.runner", "envFile": "${workspaceFolder}/.env", "cwd": "${workspaceFolder}" },
+    { "name": "Detect: dry run (print only)", "type": "debugpy", "request": "launch", "module": "watchfloor.detect.runner", "args": ["--once", "--dry-run"], "envFile": "${workspaceFolder}/.env", "cwd": "${workspaceFolder}" },
     { "name": "Dashboard", "type": "debugpy", "request": "launch", "module": "watchfloor.dashboard.app", "envFile": "${workspaceFolder}/.env", "cwd": "${workspaceFolder}" }
   ],
   "compounds": [
-    { "name": "Run full pipeline", "configurations": ["Ingest: ADS-B (OpenSky)", "Ingest: AIS (aisstream)", "Load: Kafka -> Snowflake", "Dashboard"] }
+    { "name": "Run full pipeline", "configurations": ["Ingest: ADS-B (OpenSky)", "Ingest: AIS (aisstream)", "Load: Kafka -> Snowflake", "Detect: rules + ML (every 5 min)", "Dashboard"] }
   ]
 }
