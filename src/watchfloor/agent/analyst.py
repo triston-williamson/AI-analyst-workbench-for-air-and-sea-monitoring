@@ -87,6 +87,9 @@ class DraftReport:
     cited: list[str] = field(default_factory=list)
     refused: bool = False
     incomplete: bool = False
+    # For evaluation and debugging: the full conversation and the per-field token usage.
+    history: list = field(default_factory=list)
+    usage: dict = field(default_factory=dict)
 
 
 def brief(alert: dict) -> str:
@@ -191,6 +194,14 @@ def investigate(
     report, result = "", GroundingResult(0.0)
     attempts = 0
     tokens_in = tokens_out = 0
+    usage_fields = (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    )
+    usage = dict.fromkeys(usage_fields, 0)
+    runner = None
     for attempt in range(1 + MAX_GROUNDING_RETRIES):
         # The runner ends when a turn finishes without tool calls, even if a message is appended
         # (verified against the live API). A retry therefore starts a new runner on the full
@@ -201,6 +212,8 @@ def investigate(
             last = message
             tokens_in += _input_tokens(message)
             tokens_out += getattr(getattr(message, "usage", None), "output_tokens", 0) or 0
+            for f in usage_fields:
+                usage[f] += getattr(getattr(message, "usage", None), f, 0) or 0
             if message.stop_reason == "refusal":
                 break
         if last is None or last.stop_reason == "refusal" or _has_tool_use(last):
@@ -236,6 +249,8 @@ def investigate(
         cited=sorted(set(cited_ids(report))),
         refused=refused,
         incomplete=incomplete,
+        history=history(runner) if runner is not None else [],
+        usage=usage,
     )
     if audit:
         audit.record(
