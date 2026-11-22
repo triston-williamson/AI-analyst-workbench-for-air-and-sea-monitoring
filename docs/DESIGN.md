@@ -99,11 +99,18 @@ before it counts as finished work.
 | AGT-03 | Citations must reference records supplied to the agent; invented IDs fail | `tests/test_guardrails.py` | Checker done |
 | AGT-04 | Feed text (ship names, callsigns) is treated as data, never as instructions | | Planned (red-team tests) |
 | AGT-05 | Sanctions screening against the OFAC SDN list | | Planned |
-| HIL-01 | No report is final without explicit human approval in the console | | Planned |
+| HIL-01 | No alert or report is final without explicit human approval in the console | `dashboard/app.py` review, live run | Done for alerts; reports in Phase 3 |
 | AUD-01 | All agent and human actions are written to a tamper-evident audit log | `tests/test_guardrails.py` | Done |
 | UI-01 | Live map of vessels and aircraft, refreshed every 30 s | `dashboard/app.py` | Done |
 | UI-02 | Alerts on the live map, coloured by rule, with a plain-language reason on hover | `dashboard/app.py`, live run | Done |
-| UI-03 | Alert queue and report review (approve / reject / edit) | | Planned |
+| UI-03 | Alert queue with rule/status filters; approve / reject / reopen with note, written to OPS.ALERTS and the audit log | `tests/test_console.py`, live run | Done |
+| UI-04 | Evidence trail per alert (gap, rendezvous, loiter radius, orbit) and per clicked track | `tests/test_console.py`, live run | Done |
+| UI-05 | Alert detail: plain-language reason, identity, cited sensor records, raw payload, audit history | `tests/test_console.py`, live run | Done |
+| UI-06 | Vessel symbology: colour by ship type, heading leaders scaled by speed and zoom | `tests/test_console.py` | Done |
+| UI-07 | Replay of collected history; traffic-density and dark-event heatmaps | live run | Done |
+| UI-08 | Undersea infrastructure overlay (EMODnet pipelines and cables) with attribution | `tests/test_console.py` | Done |
+| UI-09 | System-health strip: tracks, msg rate, sensor-to-DB latency, freshness, rejects, detector heartbeat | `tests/test_console.py`, live run | Done |
+| UI-10 | Classification-style banners marking the system as unclassified, public-data, demonstration only | `dashboard/app.py` | Done |
 
 ## 5. Detection design (Phase 2)
 
@@ -141,7 +148,27 @@ before it counts as finished work.
 - **Next improvement.** AIS static data (vessel type) would let detectors expect tugs and pilots
   to move erratically, which removes the largest source of ML false positives seen in live runs.
 
-## 6. Responsible AI alignment
+## 6. Operator console (Phase 4)
+
+- **Thin callbacks.** Queries live in `dashboard/data.py` (one reused Snowflake connection,
+  parameterised SQL) and drawing in `dashboard/figures.py` (pure functions, unit-tested), so the
+  Dash callbacks in `app.py` only wire them together.
+- **Explain, don't assert.** Every alert opens with a plain-language reason, the evidence trail on
+  the map, and the exact sensor records it cites, so a reviewer can check the claim rather than
+  trust a score.
+- **Decisions are auditable.** Approve / Reject / Reopen updates `OPS.ALERTS` (reviewer, time,
+  note) and appends to the hash-chained audit log; the detail panel shows that history.
+- **Banners.** "UNCLASSIFIED // PUBLIC DATA // DEMONSTRATION SYSTEM - NOT AFFILIATED WITH ANY
+  GOVERNMENT": the convention signals how the data is handled, and the wording makes clear the
+  project has no official status.
+- **Found by using it.** Building the console against live data surfaced four real defects, each
+  now covered by a regression test: the Kafka→Snowflake sink crashed on a timestamp with whole
+  seconds (`...:26Z` vs `...:26.123Z`), which the new health strip exposed as a 15-minute
+  freshness alarm (no data lost: offsets are committed only after load, so it replayed from
+  Kafka); the 30 s refresh wiped a half-typed review note; the went-dark trail lost its
+  "after" leg to sub-second rounding; and a review message leaked onto the next alert.
+
+## 7. Responsible AI alignment
 
 | DoD AI Ethical Principle | How Watchfloor addresses it |
 |---|---|
@@ -155,7 +182,7 @@ Mapped to the NIST AI RMF functions: **Govern** (audit log, roles), **Map** (thi
 non-goals and risks), **Measure** (grounding score, false-positive rate per rule), **Manage**
 (human approval, kill switch, dead-letter review).
 
-## 7. Risks
+## 8. Risks
 
 | Risk | Mitigation |
 |---|---|
@@ -166,11 +193,12 @@ non-goals and risks), **Measure** (grounding score, false-positive rate per rule
 | LLM hallucination | Mandatory citations, automated grounding check, human approval |
 | Feed rate limits | Backoff and retry; configurable poll interval |
 
-## 8. Roadmap
+## 9. Roadmap
 
 1. **Phase 1: Ingest and storage.** Kafka, producers, Snowflake sink, live map. *(done)*
 2. **Phase 2: Detection.** Loiter, rendezvous and orbit rules, ML scoring, port zones,
    `OPS.ALERTS` writer, alerts on the map. *(done)*
 3. **Phase 3: Agent.** Tool-calling analyst, OFAC screening, grounding retry loop, evaluation set.
-4. **Phase 4: Console.** Alert queue, report review, audit viewer, metrics page (hallucination
+4. **Phase 4: Console.** *(done, except metrics)* Alert queue, evidence trails, review with
+   audit, replay, heatmaps, infrastructure overlay, health strip. Still to do: metrics page (hallucination
    rate, alert precision, ingest lag).

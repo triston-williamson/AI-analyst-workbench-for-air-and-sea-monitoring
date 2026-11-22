@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     snowflake_schema: str = "RAW"
 
     audit_log_path: str = "logs/audit.jsonl"
+    # Name recorded in OPS.ALERTS and the audit log when approving/rejecting in the console.
+    analyst_name: str = "analyst"
 
     @field_validator("aoi_bbox", mode="before")
     @classmethod

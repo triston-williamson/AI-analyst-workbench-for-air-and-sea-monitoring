@@ -1,0 +1,110 @@
+/* Watchfloor operator console. Dense, dark, high-contrast; data in monospace. */
+:root {
+  --bg: #0b0f14;
+  --panel: #11161d;
+  --panel-2: #161c25;
+  --line: #222b36;
+  --text: #d8dee9;
+  --muted: #7d8a99;
+  --ok: #4cc38a;
+  --warn: #f2c14e;
+  --bad: #ef6f6c;
+  --accent: #5fa8d3;
+  --banner: #007a33;
+  --mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+html, body { margin: 0; background: var(--bg); color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px; }
+
+.console { height: 100vh; display: flex; flex-direction: column; }
+
+.banner { background: var(--banner); color: #fff; text-align: center; font-weight: 700;
+  letter-spacing: 1.5px; font-size: 11px; padding: 3px 0; flex: none; }
+
+.header { display: flex; align-items: center; gap: 18px; padding: 8px 14px;
+  border-bottom: 1px solid var(--line); flex: none; }
+.header h1 { margin: 0; font-size: 18px; letter-spacing: 4px; font-weight: 800; }
+.header .sub { color: var(--muted); }
+.header .clock { margin-left: auto; font-family: var(--mono); font-size: 15px; color: #fff; }
+
+.health { display: flex; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line);
+  overflow-x: auto; flex: none; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--muted);
+  padding: 5px 10px; min-width: 104px; border-radius: 3px; }
+.tile .k { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; }
+.tile .v { font-family: var(--mono); font-size: 16px; color: #fff; }
+.tile.ok { border-left-color: var(--ok); }
+.tile.warn { border-left-color: var(--warn); }
+.tile.bad { border-left-color: var(--bad); }
+
+.body { flex: 1; display: flex; min-height: 0; }
+.mapcol { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; padding: 6px 12px;
+  border-bottom: 1px solid var(--line); background: var(--panel); }
+.controls label { margin-right: 10px; cursor: pointer; }
+.controls .group-title { color: var(--muted); font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.8px; margin-right: 6px; }
+.replay { display: flex; align-items: center; gap: 12px; padding: 6px 12px;
+  border-bottom: 1px solid var(--line); background: var(--panel-2); }
+.replay .rc-slider { flex: 1; }
+.replay-label { font-family: var(--mono); min-width: 150px; }
+.mapwrap { flex: 1; position: relative; min-height: 0; }
+.attribution { position: absolute; right: 8px; bottom: 22px; font-size: 10px; color: var(--muted);
+  background: rgba(11, 15, 20, 0.7); padding: 2px 6px; border-radius: 3px; pointer-events: none; }
+
+.side { width: 400px; flex: none; border-left: 1px solid var(--line); display: flex;
+  flex-direction: column; min-height: 0; background: var(--panel); }
+.side h2 { margin: 0; padding: 10px 12px 4px; font-size: 12px; letter-spacing: 2px;
+  color: var(--muted); }
+.filters { padding: 4px 12px 8px; border-bottom: 1px solid var(--line); }
+.filters label { margin-right: 8px; font-size: 12px; cursor: pointer; }
+.queue { overflow-y: auto; flex: 1 1 40%; min-height: 120px; }
+.card { padding: 8px 12px; border-bottom: 1px solid var(--line); border-left: 4px solid;
+  cursor: pointer; }
+.card:hover { background: var(--panel-2); }
+.card.selected { background: #1c2430; }
+.card .t { display: flex; justify-content: space-between; font-weight: 600; }
+.card .who { color: var(--text); margin-top: 2px; }
+.card .meta { color: var(--muted); font-family: var(--mono); font-size: 11px; margin-top: 2px; }
+.badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; font-weight: 700;
+  letter-spacing: 0.5px; }
+.badge.NEW { background: #2a3442; color: #cfd8e3; }
+.badge.APPROVED { background: #134e33; color: #8ff0bd; }
+.badge.REJECTED { background: #4d1d1c; color: #ffb3b0; }
+.empty { color: var(--muted); padding: 16px 12px; }
+
+.detail { overflow-y: auto; flex: 1 1 60%; border-top: 2px solid var(--line); padding: 10px 12px; }
+.detail h3 { margin: 0 0 4px; font-size: 15px; }
+.detail .why { background: var(--panel-2); border: 1px solid var(--line); padding: 8px;
+  border-radius: 3px; margin: 8px 0; line-height: 1.45; }
+.detail h4 { margin: 12px 0 4px; font-size: 11px; color: var(--muted); letter-spacing: 1px;
+  text-transform: uppercase; }
+.kv { display: grid; grid-template-columns: 110px 1fr; gap: 2px 8px; font-size: 12px; }
+.kv .k { color: var(--muted); }
+.kv .v { font-family: var(--mono); }
+table.evidence { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+table.evidence th { text-align: left; color: var(--muted); font-weight: 400;
+  border-bottom: 1px solid var(--line); }
+table.evidence td { padding: 2px 4px 2px 0; border-bottom: 1px solid #1a212b; }
+details pre { white-space: pre-wrap; word-break: break-all; font-size: 10px; color: var(--muted);
+  max-height: 160px; overflow-y: auto; }
+.audit { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.audit div { padding: 1px 0; }
+.decision { display: flex; gap: 8px; margin-top: 6px; }
+.decision textarea { width: 100%; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 3px; font-family: inherit; padding: 6px; }
+.btn { border: none; border-radius: 3px; padding: 6px 14px; font-weight: 700; cursor: pointer;
+  letter-spacing: 0.5px; }
+.btn.approve { background: #1f7a4d; color: #fff; }
+.btn.reject { background: #8a2b2a; color: #fff; }
+.btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.btn.play { background: var(--accent); color: #04121d; }
+.agent { border: 1px dashed var(--line); padding: 8px; border-radius: 3px; color: var(--muted);
+  margin-top: 6px; }
+.msg { color: var(--ok); margin-top: 6px; font-size: 12px; }
+
+/* Dash radio/checklist labels default to black text; make them readable on the dark theme. */
+.controls label, .filters label { color: var(--text); white-space: nowrap; }
+.controls input, .filters input { accent-color: var(--accent); margin-right: 4px; }
+.filters .dash-checklist, .filters .dash-radioitems { margin-bottom: 4px; }
