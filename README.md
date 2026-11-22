@@ -7,7 +7,7 @@ draft cited intelligence-style reports that a human must approve.
 
 > Unclassified. Uses only public data feeds and textbook methods. See [docs/DESIGN.md](docs/DESIGN.md).
 
-![CI](../../actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/triston-williamson/AI-analyst-workbench-for-air-and-sea-monitoring/actions/workflows/ci.yml/badge.svg)](https://github.com/triston-williamson/AI-analyst-workbench-for-air-and-sea-monitoring/actions/workflows/ci.yml)
 
 ## Why
 
