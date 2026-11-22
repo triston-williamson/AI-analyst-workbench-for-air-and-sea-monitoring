@@ -340,7 +340,16 @@ the change cannot touch, so they are run-to-run variation. Read the 90.4% as abo
 noise of the same size. What's left is the sanctions-in-transit policy question (also driving
 injection-26) and loiter-10.
 
-Rerun: `python evals/analyst/run_eval.py --variant v2 --reps 2` after a change (approve the
+**v2: keep the first of each set of repeats.** v1 kept the *last* copy of each repeated report,
+which pairs an old position with the newest altitude. Both v1 reports for ml_anomaly-23
+described a climb from 290 m to 10,973 m in 21 s that never happened. v2 keeps the first copy,
+the one whose altitude and speed were observed with that position. Only one eval case has an
+aircraft track, so this was a focused run (ml_anomaly-23 × 5, $0.42): dismiss 5/5, the false
+climb gone in every run, citation support 74% (v1: 60%, n=2). The judge's most common
+remaining note: the agent cites a track record for the data-quality note, which has no ID of
+its own to cite.
+
+Rerun: `python evals/analyst/run_eval.py --variant v3 --reps 2` after a change (approve the
 harness first); results land beside the earlier variants for comparison.
 
 ## 9. Responsible AI alignment

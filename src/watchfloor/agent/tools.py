@@ -153,9 +153,11 @@ class Investigation:
         quality = None
         if aircraft and not df.empty:
             # Several reports with the same position time = the feed re-sent a stale position
-            # while altitude etc. kept changing. Keep one per time and tell the agent.
+            # while altitude etc. kept changing. Keep the first (loaded) report per time: only it
+            # has the altitude and speed observed with that position. Later copies pair the old
+            # position with newer values. Tell the agent how many were removed.
             repeats = int(len(df) - df.OBSERVED_AT.nunique())
-            df = df.drop_duplicates(subset="OBSERVED_AT", keep="last")
+            df = df.drop_duplicates(subset="OBSERVED_AT", keep="first")
             if repeats:
                 quality = {
                     "repeated_position_reports_removed": repeats,
