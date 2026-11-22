@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -131,6 +132,27 @@ def _text(message) -> str:
     return "\n".join(b.text for b in message.content if getattr(b, "type", None) == "text").strip()
 
 
+def _input_tokens(message) -> int:
+    """All input tokens, cached or not: with prompt caching most arrive as cache reads."""
+    u = getattr(message, "usage", None)
+    return sum(
+        getattr(u, f, 0) or 0
+        for f in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+    )
+
+
+def history(runner) -> list:
+    """The runner's full conversation (brief, tool calls and results, replies)."""
+    box: dict = {}
+
+    def grab(params):
+        box["messages"] = list(params["messages"])
+        return params
+
+    runner.set_messages_params(grab)
+    return box["messages"]
+
+
 def _has_tool_use(message) -> bool:
     return any(getattr(b, "type", None) == "tool_use" for b in message.content)
 
@@ -152,38 +174,42 @@ def investigate(
             "agent:analyst", "investigation_started", alert_id=alert["ALERT_ID"], model=model
         )
 
-    runner = client.beta.messages.tool_runner(
-        model=model,
-        max_tokens=16000,
-        system=SYSTEM_PROMPT,
-        tools=inv.tools(),
-        messages=[{"role": "user", "content": brief(alert)}],
-        max_iterations=MAX_ITERATIONS,
-        output_config={"effort": effort or cfg.agent_effort},
-        cache_control={"type": "ephemeral"},  # system prompt + tools are identical every run
-        betas=[FALLBACK_BETA],
-        fallbacks="default",  # a declined request is re-run server-side on a fallback model
-    )
+    params = {
+        "model": model,
+        "max_tokens": 16000,
+        "system": SYSTEM_PROMPT,
+        "tools": inv.tools(),
+        "max_iterations": MAX_ITERATIONS,
+        "output_config": {"effort": effort or cfg.agent_effort},
+        "cache_control": {"type": "ephemeral"},  # system prompt + tools are identical every run
+        "betas": [FALLBACK_BETA],
+        "fallbacks": "default",  # a declined request is re-run server-side on a fallback model
+    }
 
+    messages: list = [{"role": "user", "content": brief(alert)}]
     last = None
     report, result = "", GroundingResult(0.0)
-    attempts = retries = 0
+    attempts = 0
     tokens_in = tokens_out = 0
-    for message in runner:
-        last = message
-        usage = getattr(message, "usage", None)
-        tokens_in += getattr(usage, "input_tokens", 0) or 0
-        tokens_out += getattr(usage, "output_tokens", 0) or 0
-        if message.stop_reason == "refusal" or _has_tool_use(message):
+    for attempt in range(1 + MAX_GROUNDING_RETRIES):
+        # The runner ends when a turn finishes without tool calls, even if a message is appended
+        # (verified against the live API). A retry therefore starts a new runner on the full
+        # history read back through the runner's public set_messages_params hook, so the tool
+        # results and the model's earlier reasoning stay in context.
+        runner = client.beta.messages.tool_runner(messages=messages, **params)
+        for message in runner:
+            last = message
+            tokens_in += _input_tokens(message)
+            tokens_out += getattr(getattr(message, "usage", None), "output_tokens", 0) or 0
             if message.stop_reason == "refusal":
                 break
-            continue
+        if last is None or last.stop_reason == "refusal" or _has_tool_use(last):
+            break  # refused, or hit MAX_ITERATIONS mid-investigation
         attempts += 1
-        report = _text(message)
+        report = _text(last)
         result = check_grounding(report, inv.allowed_ids)
-        if result.passed or retries >= MAX_GROUNDING_RETRIES:
+        if result.passed or attempt == MAX_GROUNDING_RETRIES:
             break
-        retries += 1
         if audit:
             audit.record(
                 "agent:analyst",
@@ -193,7 +219,7 @@ def investigate(
                 uncited=len(result.uncited_sentences),
                 unknown=result.unknown_citations,
             )
-        runner.append_messages({"role": "user", "content": feedback(result)})
+        messages = history(runner) + [{"role": "user", "content": feedback(result)}]
 
     refused = last is not None and last.stop_reason == "refusal"
     incomplete = last is not None and _has_tool_use(last)  # hit MAX_ITERATIONS mid-investigation
@@ -285,6 +311,9 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="print the report, save nothing")
     args = parser.parse_args()
     configure_logging("agent")
+    sys.stdout.reconfigure(
+        encoding="utf-8"
+    )  # reports use en dashes etc.; Windows consoles default to cp1252
 
     alerts = parse_alerts(data.alerts(hours=24 * 7))
     if args.alert:

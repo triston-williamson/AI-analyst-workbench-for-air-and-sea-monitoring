@@ -246,6 +246,24 @@ before it counts as finished work.
   fixed system prompt and tools, token usage stored with every report.
 - **Human in the loop.** Reports are drafts. The analyst's Approve / Reject on the alert is the
   decision, recorded in OPS.ALERTS and the audit log.
+- **Found by testing against the live API.** The first design appended the grounding feedback
+  inside the runner's loop and assumed the runner would continue. A two-call live probe showed
+  the SDK's tool runner always ends when a turn finishes without tool calls, so the retry would
+  never have run, while the scripted test fake (written on the same assumption) passed. The loop
+  now reads the full history back through the runner's public `set_messages_params` hook and
+  starts a new runner with the feedback appended; a second live probe confirmed the tool result
+  stays in context. The test fake was rewritten to behave like the real runner.
+- **First live results** (Claude Opus 5.5, effort high): four reports, all passing grounding on
+  the first attempt, 2–5 tool calls, 16–27 s, roughly 11–32k input tokens (mostly cached) and
+  1.5–2.6k output tokens each. The agent explained a cable-work vessel on the Baltic 1 export
+  cable (moderate confidence, "verify with notices to mariners"), a self-identified naval vessel
+  on a patrol pattern, and exposed two detector false positives: a passenger ferry moored among
+  sister ships just outside a listed port zone, and an aircraft taxiing at Helsinki-Vantaa
+  flagged by the ML layer. Detectors over-flag, the agent explains, the analyst decides.
+- **Known limit.** The grounding check proves each factual sentence cites evidence the agent was
+  given, not that the evidence supports the sentence (one report cites a single record for a
+  claim about ~40 nearby vessels). Measuring that needs an evaluation set of reviewed reports,
+  the next step.
 
 ## 8. Responsible AI alignment
 

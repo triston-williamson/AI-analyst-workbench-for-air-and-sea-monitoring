@@ -25,6 +25,13 @@ alongside a cargo ship outside Gothenburg. Both tracks converge on the meeting p
 *Loitering is ranked by what lies underneath: a vessel stopped 0.058 nm from the Baltic 1
 export cable is raised first. Anchor dragging damaged Baltic cables and pipelines in 2023–24.*
 
+![AI analyst report in the console: a patrol-pattern track on the map, and a report that passed the grounding check with compact citations](docs/images/console-ai-report.jpg)
+
+*The AI analyst (Claude) investigated an ML alert with read-only tools and drafted a cited
+report: a self-identified naval vessel on a patrol pattern, 4.4 nm from Balticconnector, no
+partner vessel, identity unverified. Every factual sentence cites a sensor record; the
+reviewer still decides.*
+
 **Tuned on live data, not guessed.** Each detector was profiled against hours of real Baltic
 traffic and tightened from evidence: ship meetings 129 → 7, ML anomalies 43 → 2 (the top one a
 self-identified naval vessel on a patrol pattern), loitering 163 → 26 with ships near seabed

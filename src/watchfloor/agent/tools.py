@@ -229,6 +229,11 @@ class Investigation:
         result = sanctions.screen(imo or None, mmsi or None, name or None, vessels=self.sdn)
         for m in result["matches"]:
             self.allowed_ids.add(m["citation"][1:-1])  # "[sdn:123]" -> "sdn:123"
+        # The check itself is citable, so a negative ("no match") or "list unavailable" finding
+        # cites the check rather than borrowing an unrelated ID.
+        check_id = f"sdn:check-{self.tool_calls + 1}"
+        self.allowed_ids.add(check_id)
+        result["cite_this_check_as"] = f"[{check_id}]"
         self._log(
             "check_sanctions", {"imo": imo, "mmsi": mmsi, "name": name}, len(result["matches"])
         )

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
@@ -668,7 +669,10 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         if not n_clicks or not alert_id:
             return no_update, no_update
         if not agent_configured():
-            return no_update, "Add ANTHROPIC_API_KEY to .env to use the AI analyst."
+            return (
+                no_update,
+                "Sign in with `ant auth login` (or set ANTHROPIC_API_KEY) to use the AI analyst.",
+            )
         a = next((x for x in alerts or [] if x["ALERT_ID"] == alert_id), None)
         if a is None:
             return no_update, "Alert not found."
@@ -853,10 +857,27 @@ def alert_detail(a: dict, review: dict | None) -> list:
     ]
 
 
+CITATION_DISPLAY = re.compile(r"\[(rec|alert|sdn):([A-Za-z0-9-]{1,64})\]")
+
+
+def compact_citations(markdown: str) -> str:
+    """Show citations as short code tags (first 8 chars) on screen; the stored report keeps
+    full IDs for the audit trail."""
+    return CITATION_DISPLAY.sub(lambda m: f" `{m.group(1)}:{m.group(2)[:8]}`", markdown)
+
+
 def agent_configured() -> bool:
-    return bool(
-        get_settings().anthropic_api_key.get_secret_value() or os.environ.get("ANTHROPIC_API_KEY")
-    )
+    """True if the Claude SDK can find credentials: a key in .env or the environment, or an
+    `ant auth login` sign-in (preferred: no key stored anywhere)."""
+    if get_settings().anthropic_api_key.get_secret_value() or os.environ.get("ANTHROPIC_API_KEY"):
+        return True
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic()
+        return bool(client.api_key or getattr(client, "credentials", None))
+    except Exception:  # noqa: BLE001 - any failure here just means "not configured"
+        return False
 
 
 def report_section(a: dict) -> html.Div:
@@ -877,7 +898,7 @@ def report_section(a: dict) -> html.Div:
             "No report yet. The analyst agent investigates with read-only tools and drafts a "
             "cited assessment; you still make the decision."
             if agent_configured()
-            else "Add ANTHROPIC_API_KEY to .env to enable the AI analyst."
+            else "Sign in with `ant auth login` (or set ANTHROPIC_API_KEY) to enable the analyst."
         )
         return html.Div([html.Div(note, className="agent"), button, status])
     passed = bool(rep["GROUNDING_PASSED"])
@@ -905,7 +926,7 @@ def report_section(a: dict) -> html.Div:
         [
             html.Div([badge, html.Span(f"  {meta}", className="audit")]),
             *problems,
-            dcc.Markdown(rep["DRAFT_MARKDOWN"] or "", className="report"),
+            dcc.Markdown(compact_citations(rep["DRAFT_MARKDOWN"] or ""), className="report"),
             html.Div(
                 "AI-drafted. Not final until an analyst approves the alert.", className="audit"
             ),

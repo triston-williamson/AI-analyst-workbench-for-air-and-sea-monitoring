@@ -44,35 +44,42 @@ def msg(text=None, tool=False, stop="end_turn"):
 
 
 class FakeRunner:
-    """Yields scripted replies. Like the SDK runner, it stops after a reply with no tool call
-    unless append_messages() was called while that reply was being handled."""
+    """Mimics the SDK runner as verified against the live API: yields replies until one has no
+    tool call, then stops (appending messages does not continue it). Its history is readable
+    through set_messages_params, like the real runner's."""
 
-    def __init__(self, replies):
-        self.replies = list(replies)
-        self.appended = []
+    def __init__(self, messages, replies):
+        self.messages = list(messages)
+        self.replies = replies  # shared queue across runners
 
     def __iter__(self):
         while self.replies:
             reply = self.replies.pop(0)
-            before = len(self.appended)
+            self.messages.append({"role": "assistant", "content": reply.content})
             yield reply
-            no_tools = not any(b.type == "tool_use" for b in reply.content)
-            if no_tools and len(self.appended) == before:
+            if reply.stop_reason == "refusal" or not any(
+                b.type == "tool_use" for b in reply.content
+            ):
                 return
+            self.messages.append({"role": "user", "content": [{"type": "tool_result"}]})
 
-    def append_messages(self, *messages):
-        self.appended.extend(messages)
+    def set_messages_params(self, fn):
+        fn({"messages": self.messages})
 
 
 class FakeClient:
     def __init__(self, replies):
-        self.runner = FakeRunner(replies)
-        self.kwargs = None
+        self.replies = list(replies)
+        self.calls = []  # kwargs of every tool_runner() call
         self.beta = SimpleNamespace(messages=SimpleNamespace(tool_runner=self._tool_runner))
 
     def _tool_runner(self, **kwargs):
-        self.kwargs = kwargs
-        return self.runner
+        self.calls.append(kwargs)
+        return FakeRunner(kwargs["messages"], self.replies)
+
+    @property
+    def kwargs(self):
+        return self.calls[0]
 
 
 def no_query(sql, params):
@@ -99,7 +106,7 @@ def test_good_first_draft_passes_and_is_audited(tmp_path):
     draft = analyst.investigate(ALERT, client, no_query, audit, sdn=())
     assert draft.grounding.passed and draft.attempts == 1
     assert draft.cited == sorted({f"alert:{AID}", A1, A2})
-    assert client.runner.appended == []
+    assert len(client.calls) == 1
     actions = [json.loads(line)["action"] for line in (tmp_path / "audit.jsonl").open()]
     assert actions == ["investigation_started", "draft_report"]
     assert verify_chain(tmp_path / "audit.jsonl") == (True, None)
@@ -110,8 +117,13 @@ def test_uncited_draft_gets_one_retry_with_the_exact_problem(tmp_path):
     client = FakeClient([msg(UNCITED), msg(GOOD)])
     draft = analyst.investigate(ALERT, client, no_query, audit, sdn=())
     assert draft.grounding.passed and draft.attempts == 2
-    fb = client.runner.appended[0]["content"]
+    assert len(client.calls) == 2
+    retry_messages = client.calls[1]["messages"]
+    fb = retry_messages[-1]["content"]
     assert "It was still there at 05:20Z." in fb and "Do not invent IDs" in fb
+    # the retry keeps the whole investigation in context: the brief and the earlier draft
+    assert retry_messages[0]["content"].startswith("Investigate this alert")
+    assert any(m["role"] == "assistant" for m in retry_messages[:-1])
     actions = [json.loads(line)["action"] for line in (tmp_path / "audit.jsonl").open()]
     assert "grounding_retry" in actions
 
@@ -121,7 +133,7 @@ def test_draft_that_still_fails_is_kept_as_failing_not_hidden():
     draft = analyst.investigate(ALERT, client, no_query, None, sdn=())
     assert not draft.grounding.passed and draft.attempts == 2
     assert draft.markdown == UNCITED  # stored for the reviewer, flagged as failing
-    assert len(client.runner.appended) == 1  # exactly one retry
+    assert len(client.calls) == 2  # exactly one retry
 
 
 def test_invented_citation_fails_grounding():
@@ -293,3 +305,21 @@ def test_feedback_lists_problems():
     r = check_grounding(UNCITED + f"\n- Fake [rec:{A3}].", {f"alert:{AID}", A1, A2})
     fb = analyst.feedback(r)
     assert "It was still there at 05:20Z." in fb and A3 in fb
+
+
+def test_token_count_includes_cached_input():
+    m = msg(GOOD)
+    m.usage = SimpleNamespace(
+        input_tokens=6,
+        cache_read_input_tokens=9000,
+        cache_creation_input_tokens=1500,
+        output_tokens=300,
+    )
+    draft = analyst.investigate(ALERT, FakeClient([m]), no_query, None, sdn=())
+    assert draft.input_tokens == 10506  # regression: caching hid ~all input tokens ("6 in")
+
+
+def test_negative_sanctions_result_is_citable():
+    inv = Investigation(ALERT, no_query, None, sdn=())
+    out = json.loads(inv.sanctions_check(imo=9999999))
+    assert out["matches"] == [] and out["cite_this_check_as"][1:-1] in inv.allowed_ids
