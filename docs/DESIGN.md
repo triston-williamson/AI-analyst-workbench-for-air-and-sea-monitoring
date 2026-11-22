@@ -99,7 +99,8 @@ before it counts as finished work.
 | AUD-02 | Audit log stays a single valid chain with several concurrent writers; broken chains are archived and re-anchored, never edited | `tests/test_guardrails.py` | Done |
 | DET-15 | ML scores merchant ships at sea only, with minimum track length and an absolute score floor; at most 5 per pass | `tests/test_phase2_detectors.py` (incl. positive control), live run (43 → 2) | Done |
 | DET-16 | LOITER near undersea cables/pipelines (≤ 1 nm) is always raised, ranked up and names the asset; anchorage crowds suppressed | `tests/test_vessel_types.py`, live run (163 → 26) | Done |
-| DET-17 | The storm guard never holds back priority alerts (near infrastructure, tanker pairs) | `tests/test_vessel_types.py` | Done |
+| DET-17 | The storm guard never holds back priority alerts (near infrastructure, tanker pairs, sanctioned vessels) | `tests/test_vessel_types.py`, `tests/test_agent.py` | Done |
+| DET-18 | Any vessel in the area matching the OFAC SDN list on IMO or MMSI raises a priority SANCTIONS alert; screening is indexed (3,329 vessels in ~60 ms) | `tests/test_agent.py`, live run | Done |
 | AGT-01 | Agent tools are read-only; the agent cannot change alert or report status | `agent/tools.py`, `tests/test_agent.py` | Done |
 | AGT-02 | Every factual sentence (Summary, Observations) cites `[rec:..]`, `[alert:..]` or `[sdn:..]`; judgement lives in Assessment | `guardrails/grounding.py`, `tests/test_agent.py` | Done |
 | AGT-03 | Citations must reference records supplied to the agent; invented IDs fail; a failing draft is returned once, then stored as failing | `tests/test_agent.py` | Done |
@@ -127,6 +128,7 @@ before it counts as finished work.
 | LOITER | Two-pointer scan: from each anchor point, extend while the track stays within R and reports keep arriving. Merchant ships only (same pool as RENDEZVOUS) that have broadcast what they are and aren't fishing; loiterers with ≥ 2 others within 3 nm dropped as an anchorage. **Any loiterer within 1 nm of an undersea cable or pipeline is always kept, +0.3, and named with the asset and distance** | R = 1 nm, ≥ 3 h | Lone ships waiting at anchor for a berth; cable maintenance/survey vessels (legitimate, but must be seen) |
 | RENDEZVOUS | 10-minute time slots; spatial grid hash finds close pairs per slot (neighbours only, not all pairs); groups of more than 3 slow vessels are dropped as berths/anchorages; consecutive slots form an episode. Only ships capable of a transfer: class A transponder, ≥ 50 m, not passenger, not moored/fishing. Spots where ≥ 4 different vessels pair up over time are dropped as berths. Tanker pairs +0.3, tanker alongside cargo +0.2, both identities unknown −0.2 | ≤ 0.15 nm (alongside), ≤ 3 kts, ≥ 30 min, group ≤ 3 | Legitimate bunkering; berths in inland waters (e.g. Lake Mälaren) |
 | ORBIT | Signed heading change summed over a sliding window, so S-turns cancel and only sustained circling accumulates | ≥ 720° in ≤ 45 min | Airport holding patterns, survey and training flights |
+| SANCTIONS | Every vessel in the picture whose IMO (strong) or MMSI (medium) matches the OFAC SDN list; one alert per presence, at the latest position. Name-only matches never alert (names are reused and spoofed). Priority: the storm guard cannot hold it back | IMO / MMSI match | Lawful transit by a listed vessel (presence is not wrongdoing; the alert says so) |
 | ML_ANOMALY | Isolation Forest over 8 kinematic features per track (speed mean/std/max, path length, straightness, turn rate, max report gap, report rate); robust z-scores name the top 3 drivers. Baseline = merchant ships at sea: same transfer-capable pool as RENDEZVOUS, positions inside port zones dropped | top 5, ≥ 99th percentile **and** raw score ≥ 0.65, tracks ≥ 2 h (aircraft 0.5 h) and ≥ 20 points, ≥ 30 tracks | Naval patrols, research/survey ships, vessels on inland waters (e.g. Lake Mälaren) |
 
 - **Thresholds** live in one dataclass (`detect/runner.py: Thresholds`) so they can be tuned
@@ -260,6 +262,14 @@ before it counts as finished work.
   on a patrol pattern, and exposed two detector false positives: a passenger ferry moored among
   sister ships just outside a listed port zone, and an aircraft taxiing at Helsinki-Vantaa
   flagged by the ML layer. Detectors over-flag, the agent explains, the analyst decides.
+- **Who, not just how (detector v7).** Screening every tracked vessel against the downloaded
+  OFAC list found one strong IMO match: a cargo vessel listed under RUSSIA-EO14024 sailing
+  normally through the Øresund. No behaviour rule flagged it, because its movement *was*
+  normal, so the SANCTIONS rule now raises it as a priority alert. The analyst agent then
+  confirmed the identity from the ship's own AIS static data, reconstructed a steady
+  southbound transit with no stops or meetings, and recommended monitoring the rest of the
+  voyage: high confidence on identity, moderate on benign behaviour, since public AIS cannot
+  show cargo.
 - **Known limit.** The grounding check proves each factual sentence cites evidence the agent was
   given, not that the evidence supports the sentence (one report cites a single record for a
   claim about ~40 nearby vessels). Measuring that needs an evaluation set of reviewed reports,

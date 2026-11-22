@@ -2,8 +2,9 @@
 
 **An AI-assisted maritime and air domain awareness workbench.** It streams live aircraft (ADS-B)
 and ship (AIS) positions through Kafka into Snowflake, flags suspicious behaviour such as vessels
-going dark, loitering, ship-to-ship meetings and aircraft orbits, and uses an LLM analyst agent to
-draft cited intelligence-style reports that a human must approve.
+going dark, loitering, ship-to-ship meetings, aircraft orbits and vessels on the OFAC sanctions
+list, and uses an LLM analyst agent to draft cited intelligence-style reports that a human must
+approve.
 
 > Unclassified. Uses only public data feeds and textbook methods. See [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -58,7 +59,7 @@ aisstream (AIS) ─┘     └─► dead-letter (rejected input) └─► Dash
 | Streaming | Kafka (KRaft) in Docker |
 | Warehouse | Snowflake |
 | Validation | Pydantic v2: all feed data is treated as untrusted |
-| Detection | Rule engine (gap, loiter, rendezvous, orbit) + Isolation Forest anomaly scoring |
+| Detection | Rule engine (gap, loiter, rendezvous, orbit, OFAC sanctions match) + Isolation Forest anomaly scoring |
 | AI | LLM agent with read-only tools, citation grounding check, human-in-the-loop |
 | UI | Plotly Dash |
 | Quality | pytest, ruff, GitHub Actions CI |

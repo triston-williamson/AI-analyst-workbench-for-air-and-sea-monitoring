@@ -333,3 +333,66 @@ def test_multi_program_entries_are_cleaned(tmp_path):
     path = tmp_path / "sdn.csv"
     path.write_text(row, encoding="utf-8")
     assert sanctions.parse_sdn_csv(path)[0].program == "UKRAINE-EO13662, RUSSIA-EO14024"
+
+
+# ---------------------------------------------------------------- SANCTIONS detector (DET-18)
+from datetime import UTC, datetime, timedelta  # noqa: E402
+
+from watchfloor.detect.rules import Point, find_sanctioned  # noqa: E402
+from watchfloor.detect.runner import Identity, plan_writes, sanctions_lookup  # noqa: E402
+
+
+def _transit(mmsi, n=6):
+    t0 = datetime(2026, 11, 22, 3, 0, tzinfo=UTC)
+    return [
+        Point(
+            f"{mmsi}-{i:02d}".ljust(32, "0"),
+            mmsi,
+            t0 + timedelta(minutes=10 * i),
+            55.6 - 0.02 * i,
+            12.7,
+            11.0,
+            192.0,
+        )
+        for i in range(n)
+    ]
+
+
+def test_listed_vessel_in_transit_raises_priority_alert(sdn):
+    ids = {"273000001": Identity(70, "SHADOW ONE", imo=9123456)}
+    alerts = find_sanctioned(_transit("273000001"), sanctions_lookup(ids, sdn))
+    assert len(alerts) == 1
+    a = alerts[0]
+    assert a.rule == "SANCTIONS" and a.score == 0.95 and a.details["priority"]
+    assert a.details["sdn_entry"] == "36001" and a.details["match_strength"] == "strong"
+    assert a.lat == pytest.approx(55.5) and a.end_at > a.start_at  # latest position, whole stay
+
+
+def test_mmsi_only_match_is_medium_and_name_only_does_not_alert(sdn):
+    by_mmsi = find_sanctioned(_transit("613000001"), sanctions_lookup({}, sdn))
+    assert by_mmsi[0].score == 0.8 and by_mmsi[0].details["matched_on"] == "MMSI"
+    same_name = {"273000002": Identity(70, "SHADOW ONE", imo=9000009)}  # name reused, other hull
+    assert find_sanctioned(_transit("273000002"), sanctions_lookup(same_name, sdn)) == []
+
+
+def test_rule_is_inactive_without_the_list(monkeypatch):
+    from watchfloor.agent import sanctions as s
+
+    monkeypatch.setattr(s, "load", lambda path=None: None)
+    ids = {"273000001": Identity(70, "SHADOW ONE", imo=9123456)}
+    assert find_sanctioned(_transit("273000001"), sanctions_lookup(ids)) == []
+
+
+def test_sanctions_alerts_get_through_a_storm(sdn):
+    from watchfloor.detect.runner import STORM_LIMIT
+
+    ids = {f"2730{k:05d}": Identity(70, "X", imo=9123456) for k in range(STORM_LIMIT + 3)}
+    pts = [p for m in ids for p in _transit(m)]
+    alerts = find_sanctioned(pts, sanctions_lookup(ids, sdn))
+    _, created, held = plan_writes(alerts, existing=[])
+    assert len(created) == STORM_LIMIT + 3 and held == {}
+
+
+def test_agent_may_cite_the_listed_entry():
+    alert = dict(ALERT, RULE="SANCTIONS", details={"sdn_entry": "37073"})
+    assert "sdn:37073" in Investigation(alert, no_query, None).allowed_ids

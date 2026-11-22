@@ -52,7 +52,8 @@ ALERT_NAMESPACE = uuid.UUID("6f1c2d1e-9a51-4c4e-8f0e-7c3b3c1a9e10")
 #     Tuned on 43 live v4 alerts; see DESIGN.md.
 # v6: LOITER limited to the same vessel pool; anchorage clusters suppressed; loiterers near
 #     undersea cables/pipelines always kept and ranked up. Tuned on 163 live alerts.
-DETECTOR_VERSION = "6"
+# v7: SANCTIONS rule: vessels whose IMO or MMSI matches the OFAC SDN list (priority).
+DETECTOR_VERSION = "7"
 INFRA_NEAR_NM = 1.0
 INFRA_BOOST = 0.3
 NAV_STATUS = {
@@ -273,6 +274,30 @@ def sts_capable(
     return not (ident.length_m and ident.length_m < min_length_m)
 
 
+def sanctions_lookup(identities: dict[str, Identity], vessels=None):
+    """MMSI -> strongest IMO/MMSI sanctions match, or None. Uses the downloaded OFAC list;
+    if it hasn't been downloaded the rule simply finds nothing (and says so once)."""
+    from watchfloor.agent import sanctions
+
+    listed = sanctions.load() if vessels is None else vessels
+    if listed is None:
+        if not getattr(sanctions_lookup, "_warned", False):
+            log.warning(
+                "OFAC list not downloaded: SANCTIONS rule inactive (run scripts/fetch_sanctions.py)"
+            )
+            sanctions_lookup._warned = True
+        return lambda mmsi: None
+
+    def lookup(mmsi: str):
+        ident = identities.get(mmsi)
+        imo = ident.imo if ident is not None else None
+        res = sanctions.screen(imo=imo, mmsi=mmsi, vessels=listed)
+        strong = [m for m in res["matches"] if m["strength"] in ("strong", "medium")]
+        return strong[0] if strong else None
+
+    return lookup
+
+
 def annotate_loiter(alert: Alert, track: list[Point]) -> Alert:
     """Add AIS status and nearest seabed infrastructure; rank up loiterers near cables/pipes."""
     stay = [p for p in track if alert.start_at <= p.observed_at <= alert.end_at]
@@ -355,6 +380,7 @@ def detect(
         in_port=in_port,
     )
     alerts, _ = rules.suppress_recurring_spots(alerts)
+    alerts += rules.find_sanctioned(vessels, sanctions_lookup(identities))
     alerts += rules.find_orbits(aircraft, min_turn_deg=t.orbit_min_turn_deg)
     # ML baseline: merchant ships at sea. Same transfer-capable pool as RENDEZVOUS (no small
     # craft, ferries or service vessels), and only positions outside port zones: in live runs
@@ -439,7 +465,8 @@ def plan_writes(
             # A flood is held back, but priority alerts (near seabed infrastructure, tanker
             # pairs) always get through: noise must not be able to hide them.
             priority = [(a, i) for a, i in items if a.details.get("priority")]
-            held[rule] = len(items) - len(priority)
+            if len(items) > len(priority):
+                held[rule] = len(items) - len(priority)
             items = priority
         for a, alert_id in items:
             rows.append(stage_row(a, alert_id, is_new=True))

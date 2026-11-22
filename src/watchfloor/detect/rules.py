@@ -383,6 +383,53 @@ def suppress_anchorage_clusters(
     return other + kept, dropped
 
 
+# --------------------------------------------------------------------------- DET-18 sanctions
+SanctionsLookup = Callable[[str], "dict | None"]
+
+
+def find_sanctioned(points: Iterable[Point], lookup: SanctionsLookup) -> list[Alert]:
+    """Flag every vessel in the picture whose identity matches a sanctions list entry.
+
+    Unlike the behaviour rules this fires on *who*, not *how*: a listed vessel transiting
+    normally is exactly what the other detectors cannot see. ``lookup(mmsi)`` returns the
+    strongest match (IMO or MMSI; name-only matches are too unreliable to alert on) or None.
+    One alert covers the vessel's whole presence in the window, positioned at its latest report.
+    """
+    alerts: list[Alert] = []
+    for track_id, pts in group_tracks(points).items():
+        match = lookup(track_id)
+        if not match:
+            continue
+        last = pts[-1]
+        ent = match["citation"][len("[sdn:") : -1]
+        alerts.append(
+            Alert(
+                rule="SANCTIONS",
+                track_type="VESSEL",
+                track_id=track_id,
+                score=0.95 if match["strength"] == "strong" else 0.8,
+                evidence_ids=sample_evidence(pts),
+                details={
+                    "sdn_entry": ent,
+                    "sdn_name": match["sdn_name"],
+                    "program": match["program"],
+                    "listed_flag": match.get("flag"),
+                    "matched_on": match["matched_on"],
+                    "match_strength": match["strength"],
+                    "reports": len(pts),
+                    "last_speed_kts": last.speed_kts,
+                    "last_course_deg": last.course_deg,
+                    "priority": True,
+                },
+                lat=last.lat,
+                lon=last.lon,
+                start_at=pts[0].observed_at,
+                end_at=last.observed_at,
+            )
+        )
+    return alerts
+
+
 # --------------------------------------------------------------------------- DET-04 orbits
 def find_orbits(
     points: Iterable[Point],
