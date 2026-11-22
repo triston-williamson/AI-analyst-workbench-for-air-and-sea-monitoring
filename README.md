@@ -33,6 +33,13 @@ report: a self-identified naval vessel on a patrol pattern, 4.4 nm from Balticco
 partner vessel, identity unverified. Every factual sentence cites a sensor record; the
 reviewer still decides.*
 
+**Evaluated, not just tested.** An eval of 26 frozen real alerts (labels verified by a human)
+runs the agent end to end and grades each report: right call **82.7%**, citation support
+**79.9%** (graded by a separate Claude judge), grounding guardrail 100%, prompt-injection attacks
+resisted 4/4, at about $0.11 and 18 s per report. It exposed what the guardrail can't see:
+claims cited to the wrong record, and a tool gap that made a stale aircraft track look like a
+flight into Kaliningrad. See [DESIGN.md §8](docs/DESIGN.md#8-evaluating-the-analyst-evalsanalyst).
+
 **Tuned on live data, not guessed.** Each detector was profiled against hours of real Baltic
 traffic and tightened from evidence: ship meetings 129 → 7, ML anomalies 43 → 2 (the top one a
 self-identified naval vessel on a patrol pattern), loitering 163 → 26 with ships near seabed

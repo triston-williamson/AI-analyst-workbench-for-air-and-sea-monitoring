@@ -1,0 +1,66 @@
+{
+ "schema": "hillclimb/v2",
+ "metrics": [
+  {
+   "id": "disposition",
+   "label": "Right call",
+   "kind": "binary"
+  },
+  {
+   "id": "citation_support",
+   "label": "Cites support",
+   "kind": "float",
+   "scale": 1
+  },
+  {
+   "id": "grounding",
+   "label": "Grounding",
+   "kind": "binary"
+  },
+  {
+   "id": "format",
+   "label": "Format",
+   "kind": "binary"
+  }
+ ],
+ "perf_fields": [
+  {
+   "id": "latency_s",
+   "label": "Latency",
+   "unit": "s"
+  },
+  {
+   "id": "tool_calls",
+   "label": "Tool calls"
+  },
+  {
+   "id": "in_tokens",
+   "label": "In tokens"
+  },
+  {
+   "id": "out_tokens",
+   "label": "Out tokens"
+  },
+  {
+   "id": "cost_usd",
+   "label": "Cost",
+   "unit": "$"
+  }
+ ],
+ "harness_paths": [
+  "evals/analyst/run_eval.py",
+  "evals/analyst/graders.py",
+  "evals/analyst/cases.jsonl"
+ ],
+ "prices": {
+  "claude-opus-5-5": {
+   "in": 4.0,
+   "out": 20.0
+  },
+  "claude-sonnet-5-5": {
+   "in": 2.0,
+   "out": 10.0
+  }
+ },
+ "approved_harness_sha": "eb32ba2eacf63b69dcd8c8b6257f9c661d1aee84a80e61ebe78f69caa155dc95"
+}

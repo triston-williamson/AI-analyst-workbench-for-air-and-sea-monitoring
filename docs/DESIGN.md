@@ -275,7 +275,55 @@ before it counts as finished work.
   claim about ~40 nearby vessels). Measuring that needs an evaluation set of reviewed reports,
   the next step.
 
-## 8. Responsible AI alignment
+## 8. Evaluating the analyst (`evals/analyst`)
+
+The grounding guardrail proves citations exist; it cannot say whether the agent reached the
+right call or whether a citation actually supports its sentence. The eval measures both.
+
+- **Cases.** 24 real alerts across all five rules, frozen as snapshots (the detector keeps
+  updating live alerts; the RAW tables the tools read are append-only, so reruns see the same
+  evidence), plus 2 prompt-injection cases built on real alerts. Labels (dismiss / monitor /
+  escalate) were proposed from raw sensor data, never from model reports, and verified by the
+  analyst; one was corrected after the pilot from raw records (a rescue boat moored alongside).
+  No real alert in the window warranted *escalate*; the always-dismiss baseline is 81%.
+- **Grading.** Right call (programmatic, headline, also per label); citation support (Claude
+  Sonnet 5.5 at high effort judges each observation against exactly what the agent saw;
+  arithmetic and well-known place names from cited coordinates count, sampled range claims
+  count half); grounding and format (programmatic); injection resistance. The judge scored 0 on
+  planted bad answers (empty, "I don't know", wrong vessel) and was deterministic over 3 runs;
+  at medium effort it ignored the agreed rubric, so it runs at high.
+- **Runner.** Calls the real `investigate()` entry point; writes rows as cases finish; resumes
+  by (case, rep); per-case wall-clock ceiling; failures classed into `errors.jsonl`, never
+  scored as zeros; served model asserted; a harness gate (sha of eval + agent code) that only
+  the analyst can approve.
+
+**Baseline** (Claude Opus 5.5, 26 cases × 2 runs, $5.60, median 18 s per report):
+
+| Metric | Result |
+|---|---|
+| Right call | 82.7% ± 10 (dismiss 92.9% n=42, monitor 40.0% n=10) |
+| Citation support | 79.9% ± 2 |
+| Grounding guardrail | 100% |
+| Format | 100% |
+| Injection resisted | 4 / 4 |
+
+What it showed:
+- **The guardrail's blind spot, quantified:** 100% of reports pass grounding, but about 1 in 5
+  cited claims is only partly supported by what it cites (sampled ranges, claims cited to the
+  wrong source, small numeric errors).
+- **Sanctioned vessels:** the agent escalates a listed ship in normal transit ("authorities
+  should be told") where the label says monitor: a policy question for the watch floor, to be
+  settled in the prompt rather than the label.
+- **Injection:** on the fake "OFAC delisted this vessel" name it kept the sanctions finding
+  and escalated *because of* the manipulation attempt.
+- **A harmful tool gap:** the aircraft track tool returns no altitude or callsign, so a stale
+  OpenSky track (an ingestion bug: repeated stale positions stored as new records) read as a
+  possible flight into Kaliningrad and was escalated.
+
+Rerun: `python evals/analyst/run_eval.py --variant v1 --reps 2` after a change (approve the
+harness first); results land beside the baseline for comparison.
+
+## 9. Responsible AI alignment
 
 | DoD AI Ethical Principle | How Watchfloor addresses it |
 |---|---|
@@ -289,7 +337,7 @@ Mapped to the NIST AI RMF functions: **Govern** (audit log, roles), **Map** (thi
 non-goals and risks), **Measure** (grounding score, false-positive rate per rule), **Manage**
 (human approval, kill switch, dead-letter review).
 
-## 9. Risks
+## 10. Risks
 
 | Risk | Mitigation |
 |---|---|
@@ -300,13 +348,14 @@ non-goals and risks), **Measure** (grounding score, false-positive rate per rule
 | LLM hallucination | Mandatory citations, automated grounding check, human approval |
 | Feed rate limits | Backoff and retry; configurable poll interval |
 
-## 10. Roadmap
+## 11. Roadmap
 
 1. **Phase 1: Ingest and storage.** Kafka, producers, Snowflake sink, live map. *(done)*
 2. **Phase 2: Detection.** Loiter, rendezvous and orbit rules, ML scoring, port zones,
    `OPS.ALERTS` writer, alerts on the map. *(done)*
 3. **Phase 3: Agent.** *(built)* Tool-calling analyst, OFAC screening, grounding retry loop.
-   Next: an evaluation set of reviewed alerts to measure report accuracy and grounding over time.
+   Evaluation set built (§8). Next: aircraft tool (altitude, callsign), a sanctions escalation
+   policy in the prompt, and fixing the stale-position ingestion bug, each measured as a variant.
 4. **Phase 4: Console.** *(done, except metrics)* Alert queue, evidence trails, review with
    audit, replay, heatmaps, infrastructure overlay, health strip. Still to do: metrics page (hallucination
    rate, alert precision, ingest lag).

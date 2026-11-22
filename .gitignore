@@ -39,3 +39,15 @@ logs/
 
 # Downloaded reference data (OFAC list); re-create with scripts/fetch_sanctions.py
 /data/
+
+# ---------- Analyst eval (evals/analyst, .claude/hillclimb) ----------
+# Keep the cases and per-run results (needed to rerun and compare); keep transcripts,
+# rendered reports and the eval's own audit log local.
+!evals/**/cases.jsonl
+!.claude/hillclimb/**/results.jsonl
+!.claude/hillclimb/**/errors.jsonl
+.claude/hillclimb/**/traces/
+.claude/hillclimb/**/report.html
+.claude/hillclimb/**/state.json
+.claude/hillclimb/**/trajectory/
+*.jsonl.lock
