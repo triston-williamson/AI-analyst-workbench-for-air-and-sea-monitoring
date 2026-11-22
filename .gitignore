@@ -51,3 +51,4 @@ logs/
 .claude/hillclimb/**/state.json
 .claude/hillclimb/**/trajectory/
 *.jsonl.lock
+demo_snapshot/

@@ -8,6 +8,12 @@ approve.
 
 > Unclassified. Uses only public data feeds and textbook methods. See [docs/DESIGN.md](docs/DESIGN.md).
 
+**[▶ Live demo](https://watchfloor-demo.onrender.com/)**: the real console, read-only, on six
+hours of live Baltic data (about 1,900 vessels, 140 aircraft, 142 alerts) with the AI reports
+Claude drafted on it. Click an alert in the queue, or open **AI REPORTS** below the map. It runs
+on a free tier, so the first visit after a quiet spell can take about a minute to wake.
+How it works: [docs/DEMO.md](docs/DEMO.md).
+
 **Read the [technical write-up (PDF, 23 pages)](docs/Watchfloor_Technical_Write-Up.pdf)** for the
 whole project in one place: architecture, ingestion, storage, each detector, the ML layer,
 sanctions screening, the AI analyst and its guardrails, the evaluation and hill-climb, the
@@ -32,7 +38,7 @@ queue. Queue cards show the AI analyst's recommendation (here "AI · dismiss" on
 | **AI analyst** | Claude Opus 5.5 with read-only tools; every factual sentence must cite a sensor record |
 | **Evaluated** | Right call 82.7% → **90.4%**, citation support 80.2%, grounding 100%, prompt injection resisted 4/4 |
 | **Cost** | About $0.11 and 18 s per AI report; one X-Small Snowflake warehouse that auto-suspends |
-| **Quality** | 167 tests, ruff, gitleaks secret scanning, GitHub Actions CI |
+| **Quality** | 182 tests, ruff, gitleaks secret scanning, GitHub Actions CI |
 
 ## What it finds
 
@@ -131,6 +137,7 @@ narrows the picture to the few that matter and explains why, with every claim ti
 | 2 | Detection: AIS gaps, loitering, ship-to-ship rendezvous, aircraft orbits, ML anomaly scoring, vessel-type context, alerts on map | ✅ built |
 | 3 | AI analyst agent (Claude): read-only tools, OFAC sanctions screening, cited reports with a grounding retry loop, 26-case evaluation with a hill-climb (v1, v2) | ✅ built |
 | 4 | Operator console: alert queue, evidence trails, approve/reject with audit, replay, heatmaps, system health, AI report badges and reports list | ✅ built (metrics page 📋) |
+| Demo | Read-only public demo: the console on an exported data snapshot, in a Docker container deployed free on Render | ✅ built |
 
 Requirements and how each is verified are listed in [DESIGN.md §4](docs/DESIGN.md#4-requirements-and-traceability).
 Next up: a sanctions escalation policy in the agent prompt (measured as an eval variant), a
@@ -235,12 +242,15 @@ src/watchfloor/
   detect/      rules (gap, loiter, rendezvous, orbit, sanctions), ML scoring, port zones, runner
   agent/       AI analyst agent: tools, OFAC sanctions screening, investigation loop
   guardrails/  hash-chained audit log, citation grounding checker
-  dashboard/   operator console: app (layout/callbacks), data (queries), figures (map drawing), assets
+  dashboard/   operator console: app (layout/callbacks), data (queries), demo_data (snapshot),
+               figures (map drawing), assets
 evals/analyst/ 26-case evaluation: cases, graders (incl. LLM judge), runner
-scripts/       pipeline start/stop/status, OFAC and EMODnet downloads
-tests/         167 pytest tests: models, detectors, agent, guardrails, console, eval graders
+scripts/       pipeline start/stop/status, OFAC and EMODnet downloads, demo snapshot and deploy bundle
+deploy/demo/   public demo: Dockerfile, Render Blueprint, bundle README
+tests/         182 pytest tests: models, detectors, agent, guardrails, console, demo, eval graders
 docs/
   DESIGN.md                          requirements, architecture, Responsible AI mapping, risks
+  DEMO.md                            the public demo: how it works, run it, deploy it
   Watchfloor_Technical_Write-Up.pdf  full technical write-up
   images/                            screenshots and the architecture diagram
 ```

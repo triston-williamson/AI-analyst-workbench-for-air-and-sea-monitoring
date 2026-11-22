@@ -1,0 +1,9 @@
+# Render Blueprint for the public demo (see docs/DEMO.md).
+# One free web service built from the Dockerfile in this folder.
+services:
+  - type: web
+    name: watchfloor-demo
+    runtime: docker
+    plan: free
+    healthCheckPath: /
+    autoDeploy: true

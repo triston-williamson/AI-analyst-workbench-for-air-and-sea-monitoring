@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -43,6 +43,11 @@ def _query(sql: str, params: dict | None = None) -> pd.DataFrame:
                 finally:
                     _conn = None
     raise RuntimeError("unreachable")
+
+
+def now() -> datetime:
+    """The console's clock. (The public demo's stand-in returns the end of its snapshot.)"""
+    return datetime.now(UTC)
 
 
 def run_query(sql: str, params: dict | None = None) -> pd.DataFrame:
