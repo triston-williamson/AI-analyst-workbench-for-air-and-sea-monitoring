@@ -1,0 +1,60 @@
+"""Central configuration, loaded from environment variables / .env."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Annotated
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# Kafka topic names - one place so producers and consumers can't drift.
+TOPIC_ADSB = "adsb.positions"
+TOPIC_AIS = "ais.positions"
+TOPIC_DEAD_LETTER = "ingest.dead_letter"
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    kafka_bootstrap: str = "localhost:9092"
+
+    # NoDecode: parse "a,b,c,d" ourselves instead of pydantic-settings expecting JSON.
+    aoi_bbox: Annotated[tuple[float, float, float, float], NoDecode] = Field(
+        default=(53.5, 9.5, 60.5, 30.0)
+    )
+
+    opensky_client_id: str = ""
+    opensky_client_secret: str = ""
+    adsb_poll_seconds: int = 30
+
+    aisstream_api_key: str = ""
+
+    snowflake_account: str = ""
+    snowflake_user: str = ""
+    snowflake_password: str = ""
+    snowflake_private_key_file: str = ""
+    snowflake_role: str = "WATCHFLOOR_ROLE"
+    snowflake_warehouse: str = "WATCHFLOOR_WH"
+    snowflake_database: str = "WATCHFLOOR"
+    snowflake_schema: str = "RAW"
+
+    audit_log_path: str = "logs/audit.jsonl"
+
+    @field_validator("aoi_bbox", mode="before")
+    @classmethod
+    def _parse_bbox(cls, v):
+        if isinstance(v, str):
+            parts = [float(p) for p in v.split(",")]
+            if len(parts) != 4:
+                raise ValueError("AOI_BBOX must be min_lat,min_lon,max_lat,max_lon")
+            v = tuple(parts)
+        min_lat, min_lon, max_lat, max_lon = v
+        if not (-90 <= min_lat < max_lat <= 90 and -180 <= min_lon < max_lon <= 180):
+            raise ValueError("AOI_BBOX is out of range or inverted")
+        return v
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

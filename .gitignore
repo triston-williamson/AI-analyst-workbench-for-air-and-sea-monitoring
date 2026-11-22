@@ -1,0 +1,20 @@
+# Secrets - never commit
+.env
+*.p8
+*.pem
+rsa_key*
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Local runtime output
+logs/
+*.jsonl
+.DS_Store
