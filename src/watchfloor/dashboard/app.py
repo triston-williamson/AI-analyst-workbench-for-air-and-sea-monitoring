@@ -140,6 +140,42 @@ def explain(a: dict) -> str:
     return ""
 
 
+def view_update(relayout: dict | None, view: dict | None, current_zoom, trail: dict | None):
+    """New (view, zoom) store values after the analyst pans or zooms the map.
+
+    `key` records which trail the view belongs to, so selecting a different alert still fits
+    its trail. The zoom store (which sizes heading leaders and triggers a redraw) only moves
+    after a 0.4-level change, so the map is not redrawn on every scroll step.
+    """
+    relayout = relayout or {}
+    center, z = relayout.get("map.center"), relayout.get("map.zoom")
+    if center is None and z is None:
+        return no_update, no_update
+    view = dict(view or {})
+    if center is not None:
+        view["center"] = {"lat": center["lat"], "lon": center["lon"]}
+    if z is not None:
+        view["zoom"] = z
+    if "center" not in view or "zoom" not in view:
+        return no_update, no_update
+    view["key"] = trail["key"] if trail and trail.get("fit") else "base"
+    moved = z is not None and abs(z - (current_zoom or 0)) >= 0.4
+    return view, (z if moved else no_update)
+
+
+def map_view(trail: dict | None, view: dict | None, bbox) -> tuple[dict, float, str]:
+    """Centre, zoom and uirevision for a redraw: fit a newly selected trail once; otherwise
+    keep the analyst's own view; the whole area of interest before they have moved."""
+    fit = trail.get("fit") if trail else None
+    if fit and (not view or view.get("key") != trail["key"]):
+        return fit["center"], fit["zoom"], trail["key"]
+    if view:
+        return view["center"], view["zoom"], view.get("key", "base")
+    min_lat, min_lon, max_lat, max_lon = bbox
+    center = {"lat": (min_lat + max_lat) / 2, "lon": (min_lon + max_lon) / 2}
+    return center, figures.DEFAULT_ZOOM, "base"
+
+
 def trail_window(a: dict) -> tuple[datetime, datetime]:
     start = pd.Timestamp(a["START_AT"]).to_pydatetime()
     end = pd.Timestamp(a["END_AT"]).to_pydatetime()
@@ -340,6 +376,7 @@ def build_layout() -> html.Div:
             dcc.Store(id="detail-key"),
             dcc.Store(id="report-tick", data=0),
             dcc.Store(id="zoom", data=figures.DEFAULT_ZOOM),
+            dcc.Store(id="view"),
             dcc.Store(id="review-tick", data={"n": 0, "msg": ""}),
             dcc.Store(id="replay-bounds"),
             dcc.Store(id="replay-data"),
@@ -430,22 +467,32 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         Input({"type": "alert-card", "id": ALL}, "n_clicks"),
         Input("map", "clickData"),
         Input("clear-selection", "n_clicks"),
+        State("selected-alert", "data"),
+        State("selected-track", "data"),
         prevent_initial_call=True,
     )
-    def select(_cards, click, _clear):
+    def select(_cards, click, _clear, current_alert, current_track):
+        """Select an alert or track. Clicking what is already selected selects nothing.
+
+        Clicking empty map or pressing Esc presses "Clear selection" (assets/map_click.js).
+        """
         trig = ctx.triggered_id
         value = ctx.triggered[0]["value"] if ctx.triggered else None
         if trig == "clear-selection":
             return (None, None) if value else (no_update, no_update)
         if isinstance(trig, dict) and trig.get("type") == "alert-card":
-            return (trig["id"], None) if value else (no_update, no_update)
+            if not value:
+                return no_update, no_update
+            return (None if trig["id"] == current_alert else trig["id"]), None
         if trig == "map" and click:
             custom = click["points"][0].get("customdata")
             if not custom:
                 return no_update, no_update
             kind, ident = custom
             if kind == "alert":
-                return ident, None
+                return (None if ident == current_alert else ident), None
+            if current_track and current_track.get("id") == ident and not current_alert:
+                return None, None
             return None, {"type": "AIRCRAFT" if kind == "aircraft" else "VESSEL", "id": ident}
         return no_update, no_update
 
@@ -455,9 +502,10 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         Input("selected-alert", "data"),
         Input("selected-track", "data"),
         State("alerts-data", "data"),
+        State("view", "data"),
         prevent_initial_call=True,
     )
-    def load_trail(alert_id, track_sel, alerts):
+    def load_trail(alert_id, track_sel, alerts, view):
         a = None
         try:
             if alert_id:
@@ -471,8 +519,8 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
                 end = datetime.now(UTC)
                 tr = data.track(track_sel["type"], [track_sel["id"]], end - timedelta(hours=2), end)
                 key = f"track:{track_sel['id']}"
-            else:
-                return None, figures.DEFAULT_ZOOM
+            else:  # nothing selected: the map goes back to the analyst's last view
+                return None, (view or {}).get("zoom", figures.DEFAULT_ZOOM)
         except Exception:  # noqa: BLE001
             log.exception("trail query failed")
             return None, no_update
@@ -492,16 +540,22 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         )
 
     @app.callback(
+        Output("view", "data"),
         Output("zoom", "data"),
         Input("map", "relayoutData"),
+        State("view", "data"),
         State("zoom", "data"),
+        State("trail-data", "data"),
         prevent_initial_call=True,
     )
-    def track_zoom(relayout, current):
-        z = (relayout or {}).get("map.zoom")
-        if z is None or abs(z - (current or 0)) < 0.4:
-            return no_update
-        return z
+    def track_view(relayout, view, current_zoom, trail):
+        """Remember where the analyst has panned and zoomed, so redraws keep that view.
+
+        Every redraw sends a centre and zoom. It used to send the default (or the trail fit),
+        and Plotly's map does not keep user zoom across redraws, so the map jumped back after
+        each zoom step and each 30 s refresh.
+        """
+        return view_update(relayout, view, current_zoom, trail)
 
     # ---------------------------------------------------------------- replay
     @app.callback(
@@ -597,8 +651,9 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         Input("layers", "value"),
         Input("zoom", "data"),
         State("selected-alert", "data"),
+        State("view", "data"),
     )
-    def draw(live, alerts, trail, replay, heat, mode, layers, zoom, selected):
+    def draw(live, alerts, trail, replay, heat, mode, layers, zoom, selected, view):
         layers = set(layers or [])
         zoom = zoom or figures.DEFAULT_ZOOM
         traces: list = []
@@ -623,11 +678,7 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         if trail and mode in ("live", "replay"):
             traces += figures.trail_traces(trail.get("alert"), frame(trail.get("track")))
 
-        min_lat, min_lon, max_lat, max_lon = get_settings().aoi_bbox
-        center = {"lat": (min_lat + max_lat) / 2, "lon": (min_lon + max_lon) / 2}
-        view_zoom, rev = figures.DEFAULT_ZOOM, "base"
-        if trail and trail.get("fit"):
-            center, view_zoom, rev = trail["fit"]["center"], trail["fit"]["zoom"], trail["key"]
+        center, view_zoom, rev = map_view(trail, view, get_settings().aoi_bbox)
         return figures.figure(traces, center, view_zoom, rev)
 
     # ---------------------------------------------------------------- detail & review

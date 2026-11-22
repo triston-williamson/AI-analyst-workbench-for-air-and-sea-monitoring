@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
+from dash import no_update
 
 from watchfloor.dashboard import figures
 from watchfloor.dashboard.app import (
@@ -13,8 +14,10 @@ from watchfloor.dashboard.app import (
     dtg,
     explain,
     health_tiles,
+    map_view,
     records,
     trail_window,
+    view_update,
 )
 from watchfloor.dashboard.data import audit_history
 from watchfloor.guardrails.audit import AuditLog
@@ -269,3 +272,57 @@ def test_citations_are_compacted_for_display_only():
     out = compact_citations(text)
     assert "`rec:3d5af079`" in out and "`alert:e5f7456c`" in out
     assert "3d5af079c5fda3a6" not in out
+
+
+# ---------------------------------------------------------------- map view
+BBOX = (53.5, 9.5, 60.5, 30.0)
+TRAIL = {"key": "alert:x", "fit": {"center": {"lat": 55.0, "lon": 20.0}, "zoom": 9.0}}
+
+
+def test_redraw_keeps_the_analysts_zoom_instead_of_resetting():
+    view, zoom = view_update(
+        {"map.center": {"lat": 57.3, "lon": 21.2}, "map.zoom": 7.2}, None, 4.8, None
+    )
+    assert zoom == 7.2
+    center, z, _ = map_view(None, view, BBOX)
+    assert z == 7.2 and center == {"lat": 57.3, "lon": 21.2}
+
+
+def test_small_zoom_steps_do_not_trigger_a_redraw():
+    view, zoom = view_update(
+        {"map.center": {"lat": 57, "lon": 21}, "map.zoom": 5.0}, None, 4.8, None
+    )
+    assert view["zoom"] == 5.0 and zoom is no_update
+
+
+def test_pan_only_updates_the_centre():
+    start = {"center": {"lat": 57, "lon": 21}, "zoom": 6.0, "key": "base"}
+    view, zoom = view_update({"map.center": {"lat": 58, "lon": 22}}, start, 6.0, None)
+    assert view["center"] == {"lat": 58, "lon": 22} and view["zoom"] == 6.0 and zoom is no_update
+
+
+def test_non_view_relayout_is_ignored():
+    assert view_update({"autosize": True}, None, 4.8, None) == (no_update, no_update)
+
+
+def test_new_trail_is_fitted_once_then_the_analysts_view_wins():
+    old = {"center": {"lat": 57, "lon": 21}, "zoom": 6.0, "key": "base"}
+    assert map_view(TRAIL, old, BBOX)[:2] == (TRAIL["fit"]["center"], 9.0)
+    zoomed, _ = view_update(
+        {"map.center": {"lat": 55.1, "lon": 20.1}, "map.zoom": 11}, old, 9.0, TRAIL
+    )
+    assert map_view(TRAIL, zoomed, BBOX)[1] == 11
+
+
+def test_default_view_before_the_analyst_moves():
+    center, z, rev = map_view(None, None, BBOX)
+    assert z == figures.DEFAULT_ZOOM and rev == "base" and center == {"lat": 57.0, "lon": 19.75}
+
+
+def test_click_off_script_ships_with_the_console():
+    from pathlib import Path
+
+    import watchfloor.dashboard as d
+
+    js = (Path(d.__file__).parent / "assets" / "map_click.js").read_text(encoding="utf-8")
+    assert "clear-selection" in js and "Escape" in js
