@@ -62,7 +62,7 @@ async def stream() -> None:
     min_lat, min_lon, max_lat, max_lon = cfg.aoi_bbox
     pub = Publisher(make_producer(), TOPIC_AIS)
     subscribe = {
-        "APIKey": cfg.aisstream_api_key,
+        "APIKey": cfg.aisstream_api_key.get_secret_value(),
         "BoundingBoxes": [[[min_lat, min_lon], [max_lat, max_lon]]],
         "FilterMessageTypes": POSITION_TYPES,
     }

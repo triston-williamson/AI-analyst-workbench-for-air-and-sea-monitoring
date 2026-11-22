@@ -1,0 +1,48 @@
+#!/bin/sh
+# Blocks commits that would leak secrets. Enabled per clone with:
+#   git config core.hooksPath .githooks
+
+fail=0
+
+# 1. Never allow secret files to be committed, even with `git add -f`.
+blocked=$(git diff --cached --name-only --diff-filter=ACMR | grep -E \
+  '(^|/)\.env($|\.)|\.(p8|pem|key|pfx|p12)$|(^|/)(rsa_key|id_rsa)|credentials|(^|/)secrets\.|connections\.toml' \
+  | grep -vE '(^|/)\.env\.example$')
+if [ -n "$blocked" ]; then
+  echo "BLOCKED: these files look like secrets and must not be committed:"
+  echo "$blocked" | sed 's/^/  /'
+  fail=1
+fi
+
+# 2. .env.example must only contain placeholders (empty values or known-safe defaults).
+if git diff --cached --name-only | grep -qx '.env.example'; then
+  bad=$(git show :.env.example | grep -E '^[A-Z_]*(KEY|SECRET|PASSWORD|TOKEN|ACCOUNT|USER)[A-Z_]*=.+' \
+        | grep -vE '^SNOWFLAKE_(ROLE|WAREHOUSE|DATABASE|SCHEMA)=')
+  if [ -n "$bad" ]; then
+    echo "BLOCKED: .env.example has real-looking values (it is public). Blank these out:"
+    echo "$bad" | sed 's/=.*/=<redacted>/; s/^/  /'
+    fail=1
+  fi
+fi
+
+# 3. Scan staged changes with gitleaks (via Docker) for API keys/tokens anywhere in the code.
+if docker info >/dev/null 2>&1; then
+  # On Windows Git Bash: stop MSYS rewriting /repo, and give Docker a C:/... style host path.
+  host_dir=$(pwd -W 2>/dev/null || pwd)
+  MSYS_NO_PATHCONV=1 docker run --rm -v "$host_dir:/repo" -w /repo zricethezav/gitleaks:v8.21.2 \
+    git --pre-commit --staged --redact --no-banner /repo
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    echo "BLOCKED: gitleaks found a possible secret in your staged changes (see above)."
+    fail=1
+  elif [ "$rc" -ne 0 ]; then
+    echo "warning: gitleaks couldn't run (exit $rc), so the scan was skipped (file checks still ran)."
+  fi
+else
+  echo "warning: Docker isn't running, so the gitleaks scan was skipped (file checks still ran)."
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "Commit aborted. Move secrets into .env (git-ignored) and try again."
+  exit 1
+fi

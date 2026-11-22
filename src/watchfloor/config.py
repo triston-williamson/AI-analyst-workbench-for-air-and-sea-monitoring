@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Kafka topic names - one place so producers and consumers can't drift.
@@ -15,6 +15,8 @@ TOPIC_DEAD_LETTER = "ingest.dead_letter"
 
 
 class Settings(BaseSettings):
+    """Secrets use SecretStr so they print as '**********' in logs, tracebacks and reprs."""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     kafka_bootstrap: str = "localhost:9092"
@@ -25,14 +27,14 @@ class Settings(BaseSettings):
     )
 
     opensky_client_id: str = ""
-    opensky_client_secret: str = ""
+    opensky_client_secret: SecretStr = SecretStr("")
     adsb_poll_seconds: int = 30
 
-    aisstream_api_key: str = ""
+    aisstream_api_key: SecretStr = SecretStr("")
 
     snowflake_account: str = ""
     snowflake_user: str = ""
-    snowflake_password: str = ""
+    snowflake_password: SecretStr = SecretStr("")
     snowflake_private_key_file: str = ""
     snowflake_role: str = "WATCHFLOOR_ROLE"
     snowflake_warehouse: str = "WATCHFLOOR_WH"

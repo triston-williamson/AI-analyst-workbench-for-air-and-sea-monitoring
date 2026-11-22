@@ -70,6 +70,16 @@ python -m watchfloor.dashboard.app          # http://127.0.0.1:8050
 
 Run the tests with `pytest`. Change the area of interest with `AOI_BBOX` in `.env`.
 
+## Secrets handling
+
+- API keys and passwords live only in `.env`, which is git-ignored. `.env.example` holds blank
+  placeholders only.
+- Secrets load as Pydantic `SecretStr`, so they print as `**********` in logs and tracebacks.
+- A pre-commit hook ([.githooks/pre-commit](.githooks/pre-commit)) blocks secret files and runs
+  [gitleaks](https://github.com/gitleaks/gitleaks) on staged changes. Turn it on after cloning:
+  `git config core.hooksPath .githooks`
+- CI scans the full git history with gitleaks on every push.
+
 ## Repository layout
 
 ```

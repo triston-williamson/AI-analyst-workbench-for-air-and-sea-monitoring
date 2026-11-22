@@ -6,6 +6,17 @@ on:
   pull_request:
 
 jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # scan the full history, not just the latest commit
+      - name: gitleaks
+        run: >
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.2
+          git /repo --redact --no-banner -v
+
   test:
     runs-on: ubuntu-latest
     steps:

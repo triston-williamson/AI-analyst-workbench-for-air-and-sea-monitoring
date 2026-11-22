@@ -1,10 +1,26 @@
-# Secrets - never commit
+# ---------- Secrets: never commit ----------
+# Real config (only .env.example, which holds placeholders, is committed)
 .env
+.env.*
+!.env.example
+# Keys and certificates
 *.p8
 *.pem
+*.key
+*.pfx
+*.p12
 rsa_key*
+id_rsa*
+# Credential files that tools commonly create
+secrets.*
+credentials.*
+*credentials*.json
+service-account*.json
+.snowflake/
+connections.toml
+*.secret
 
-# Python
+# ---------- Python ----------
 .venv/
 __pycache__/
 *.py[cod]
@@ -14,7 +30,9 @@ __pycache__/
 build/
 dist/
 
-# Local runtime output
+# ---------- Local runtime output ----------
+# Logs and audit trails can contain raw feed data and query text
 logs/
+*.log
 *.jsonl
 .DS_Store

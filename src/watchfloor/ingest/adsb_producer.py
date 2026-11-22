@@ -88,7 +88,7 @@ def state_to_record(s: list) -> dict:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     cfg = get_settings()
-    client = OpenSkyClient(cfg.opensky_client_id, cfg.opensky_client_secret)
+    client = OpenSkyClient(cfg.opensky_client_id, cfg.opensky_client_secret.get_secret_value())
     pub = Publisher(make_producer(), TOPIC_ADSB)
     log.info("Polling OpenSky every %ss for bbox %s", cfg.adsb_poll_seconds, cfg.aoi_bbox)
     while True:

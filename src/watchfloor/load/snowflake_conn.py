@@ -37,5 +37,5 @@ def connect(**overrides) -> snowflake.connector.SnowflakeConnection:
             encryption_algorithm=serialization.NoEncryption(),
         )
     else:
-        kwargs["password"] = cfg.snowflake_password
+        kwargs["password"] = cfg.snowflake_password.get_secret_value()
     return snowflake.connector.connect(**kwargs)
