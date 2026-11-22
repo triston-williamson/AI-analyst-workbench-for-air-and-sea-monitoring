@@ -3,7 +3,9 @@
 Vessels sitting in port, or crawling through a harbour, look exactly like "loitering" or
 "rendezvous" to a naive detector. These circles suppress those false positives.
 
-Coordinates are approximate harbour centres with a generous radius. A production system would
+Coordinates are approximate harbour centres with a generous radius. This list is a backstop:
+the main defences against harbour false positives are data-driven (AIS "moored" status and the
+rendezvous crowd filter), which work even at ports missing from here. A production system would
 load the full NGA World Port Index (public) or harbour polygons instead of this hand-curated list.
 """
 
@@ -55,6 +57,51 @@ BALTIC_PORTS: tuple[Port, ...] = (
     Port("Kotka-Hamina", 60.50, 27.05, 6.0),
     Port("Primorsk", 60.35, 28.67, 5.0),
     Port("Ust-Luga", 59.68, 28.40, 5.0),
+    # Added after the first live run flooded RENDEZVOUS alerts at these berths.
+    Port("Hamburg", 53.54, 9.95, 8.0),
+    Port("Hanko", 59.82, 22.97),
+    Port("Fredrikstad", 59.21, 10.94),
+    Port("Moss", 59.43, 10.66),
+    Port("Horten", 59.42, 10.48),
+    Port("Tonsberg", 59.27, 10.41),
+    Port("Sandefjord", 59.13, 10.23),
+    Port("Larvik", 59.05, 10.03),
+    Port("Drammen", 59.74, 10.21),
+    Port("Halden", 59.12, 11.39),
+    Port("Lysekil", 58.27, 11.43),
+    Port("Stenungsund", 58.07, 11.82),
+    Port("Uddevalla", 58.35, 11.93),
+    Port("Varberg", 57.10, 12.25),
+    Port("Halmstad", 56.66, 12.85),
+    Port("Aalborg", 57.05, 9.93, 5.0),
+    Port("Grenaa", 56.41, 10.92),
+    Port("Fredericia", 55.56, 9.75),
+    Port("Odense", 55.42, 10.39),
+    Port("Nyborg-Korsor", 55.32, 10.95, 6.0),
+    Port("Kalundborg", 55.68, 11.08),
+    Port("Puttgarden-Rodby", 54.57, 11.29, 6.0),
+    Port("Gedser", 54.57, 11.93),
+    Port("Wismar", 53.90, 11.46),
+    Port("Stralsund", 54.31, 13.10),
+    Port("Sassnitz-Mukran", 54.48, 13.60),
+    Port("Ystad", 55.42, 13.82),
+    Port("Ronne", 55.10, 14.69),
+    Port("Kolobrzeg", 54.18, 15.57),
+    Port("Kalmar", 56.66, 16.37),
+    Port("Oxelosund", 58.67, 17.10),
+    Port("Sodertalje", 59.20, 17.63),
+    Port("Naantali", 60.47, 22.02),
+    Port("Porvoo-Kilpilahti", 60.30, 25.55, 5.0),
+    Port("Loviisa", 60.43, 26.27),
+    Port("Kunda", 59.52, 26.53),
+    Port("Sillamae", 59.40, 27.75),
+    Port("Parnu", 58.38, 24.48),
+    Port("Kronstadt", 59.99, 29.77, 5.0),
+    Port("Kuressaare-Roomassaare", 58.23, 22.50, 4.0),
+    # Kiel Canal: ships queue and pass at low speed along its whole length (inside the AOI).
+    Port("Kiel Canal (west)", 54.17, 9.52, 6.0),
+    Port("Kiel Canal (Rendsburg)", 54.30, 9.67, 6.0),
+    Port("Kiel Canal (east)", 54.36, 9.95, 6.0),
 )
 
 

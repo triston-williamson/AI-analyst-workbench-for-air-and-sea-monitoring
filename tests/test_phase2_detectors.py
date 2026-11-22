@@ -237,3 +237,91 @@ def test_overlapping_episode_updates_instead_of_duplicating():
         )
     ]
     assert match_existing(alert, later) is None
+
+
+# ---------------------------------------------------------------- regressions: live-run flood
+# First live run: 655 RENDEZVOUS alerts, almost all ships at berths in ports missing from the
+# port list (Hamburg, Hanko, Fredrikstad). These tests pin the fixes.
+UNLISTED_BERTH = (57.95, 21.40)  # open water, deliberately NOT in the port list
+
+
+def berth_crowd(n, centre=UNLISTED_BERTH, nav_status=None):
+    pts = []
+    for k in range(n):
+        for p in drift(
+            f"21{k:07d}", (centre[0] + 0.001 * k, centre[1]), hours=1, step_min=5, speed=0.2, seed=k
+        ):
+            pts.append(
+                Point(
+                    p.record_id,
+                    p.track_id,
+                    p.observed_at,
+                    p.lat,
+                    p.lon,
+                    p.speed_kts,
+                    None,
+                    nav_status,
+                )
+            )
+    return pts
+
+
+def test_crowd_of_slow_ships_at_unknown_berth_is_suppressed():
+    assert not in_port(*UNLISTED_BERTH)
+    assert find_rendezvous(berth_crowd(5), in_port=in_port) == []
+
+
+def test_three_ship_transfer_still_detected():
+    # Tanker, receiving ship and a service vessel: a real STS can involve 3 hulls.
+    alerts = find_rendezvous(berth_crowd(3), in_port=in_port)
+    assert len(alerts) == 3  # every pair in the group
+
+
+def test_moored_vessels_are_not_rendezvous_or_loitering():
+    pair = berth_crowd(2, nav_status=5)
+    assert find_rendezvous(pair, in_port=in_port) == []
+    assert (
+        find_loitering(
+            berth_crowd(1, nav_status=5) + [], min_duration=timedelta(minutes=30), in_port=in_port
+        )
+        == []
+    )
+
+
+def test_hamburg_is_now_a_port():
+    assert in_port(53.523, 9.931)
+
+
+def test_storm_guard_holds_back_floods_but_keeps_other_rules():
+    from watchfloor.detect.rules import Alert
+    from watchfloor.detect.runner import STORM_LIMIT, plan_writes
+
+    flood = [
+        Alert("RENDEZVOUS", "VESSEL", f"{k}|{k + 1}", 0.5, ["e"], start_at=T0, end_at=T0)
+        for k in range(STORM_LIMIT + 1)
+    ]
+    normal = [Alert("LOITER", "VESSEL", "111111111", 0.6, ["e"], start_at=T0, end_at=T0)]
+    rows, created, held = plan_writes(flood + normal, existing=[])
+    assert held == {"RENDEZVOUS": STORM_LIMIT + 1}
+    assert [a.rule for a, _ in created] == ["LOITER"]
+    assert all(r["RULE"] == "LOITER" for r in rows)
+
+
+def test_existing_episode_is_staged_as_update_with_version():
+    from watchfloor.detect.runner import DETECTOR_VERSION, plan_writes
+
+    alert = find_loitering(drift("111111111", OPEN_SEA, hours=4))[0]
+    existing = [("id-1", "LOITER", "111111111", alert.start_at, alert.end_at)]
+    rows, created, held = plan_writes([alert], existing)
+    assert created == [] and held == {}
+    assert rows[0]["ALERT_ID"] == "id-1" and rows[0]["IS_NEW"] is False
+    assert f'"detector_version": "{DETECTOR_VERSION}"' in rows[0]["DETAILS_JSON"]
+
+
+def test_pair_trawlers_are_not_rendezvous():
+    assert find_rendezvous(berth_crowd(2, nav_status=7), in_port=in_port) == []
+
+
+def test_kiel_canal_and_kuressaare_are_suppressed():
+    assert in_port(54.200, 9.553)
+    assert in_port(58.217, 22.505)

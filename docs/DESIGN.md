@@ -88,6 +88,8 @@ before it counts as finished work.
 | DET-05 | ML anomaly score per track (Isolation Forest on kinematic features), with explanation | `tests/test_phase2_detectors.py` | Done |
 | DET-06 | Suppress port activity for loiter / rendezvous / AIS-gap rules | `tests/test_phase2_detectors.py` | Done |
 | DET-07 | Re-running detection must not duplicate alerts for the same episode | `tests/test_phase2_detectors.py`, live run | Done |
+| DET-08 | A rule creating > 50 new alerts in one pass is held back and audited (storm guard) | `tests/test_phase2_detectors.py` | Done |
+| DET-09 | Alerts record the detector version; superseded alerts are retracted with a reason, never deleted | `runner --retract-rule`, live run | Done |
 | AGT-01 | Agent tools are read-only; the agent cannot change alert or report status | | Planned |
 | AGT-02 | Every factual sentence in a draft cites `[rec:<id>]` | `guardrails.grounding` | Checker done |
 | AGT-03 | Citations must reference records supplied to the agent; invented IDs fail | `tests/test_guardrails.py` | Checker done |
@@ -105,7 +107,7 @@ before it counts as finished work.
 |---|---|---|---|
 | AIS_GAP | Consecutive reports from one MMSI more than N apart; score = duration and displacement | gap ≥ 2 h | Terrestrial AIS coverage holes far offshore; vessels powering down alongside (port-suppressed) |
 | LOITER | Two-pointer scan: from each anchor point, extend while the track stays within R and reports keep arriving | R = 1 nm, ≥ 3 h | Ships waiting at anchorages outside port limits for a berth |
-| RENDEZVOUS | 10-minute time slots; spatial grid hash finds close pairs per slot (neighbours only, not all pairs); consecutive slots form an episode | ≤ 0.5 nm, ≤ 3 kts, ≥ 30 min | Tugs and pilot boats with their tow; bunkering at designated areas |
+| RENDEZVOUS | 10-minute time slots; spatial grid hash finds close pairs per slot (neighbours only, not all pairs); groups of more than 3 slow vessels are dropped as berths/anchorages; consecutive slots form an episode. Moored and fishing vessels excluded | ≤ 0.5 nm, ≤ 3 kts, ≥ 30 min, group ≤ 3 | Pilot, rescue and tug boats (need AIS vessel type); bunkering at designated areas |
 | ORBIT | Signed heading change summed over a sliding window, so S-turns cancel and only sustained circling accumulates | ≥ 720° in ≤ 45 min | Airport holding patterns, survey and training flights |
 | ML_ANOMALY | Isolation Forest over 8 kinematic features per track (speed mean/std/max, path length, straightness, turn rate, max report gap, report rate); robust z-scores name the top 3 drivers | top 10, ≥ 98th percentile, ≥ 30 tracks | Harbour craft (tugs, pilots), which move erratically by design |
 
@@ -113,6 +115,13 @@ before it counts as finished work.
   without touching detector code.
 - **Port zones** are hand-curated circles around 31 Baltic ports (`detect/ports.py`). The
   production upgrade is the NGA World Port Index or harbour polygons.
+- **Lesson from the first live run.** v1 produced 655 RENDEZVOUS alerts in 10 minutes: ships
+  moored side by side in ports missing from the list (Hamburg, Hanko, Fredrikstad), with every
+  pair in a crowded berth alerting separately. v2 adds data-driven defences that do not depend
+  on a complete port list (AIS moored/fishing status, crowd filter), a **storm guard** that holds
+  back any rule creating more than 50 new alerts in one pass, and **versioned alerts** so the
+  734 v1 alerts were retracted with a reason instead of deleted. Result: 655 → 7, and the 7
+  remaining are harbour craft that AIS vessel type will remove.
 - **Idempotency.** Detection re-scans a sliding window. An alert whose rule and track overlap an
   existing alert's time window updates that alert (score, evidence, window) instead of creating a
   duplicate. Only new alerts are written to the audit log.
