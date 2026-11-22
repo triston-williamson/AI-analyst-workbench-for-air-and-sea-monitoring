@@ -37,6 +37,7 @@ from watchfloor.detect.ports import in_port
 from watchfloor.detect.rules import Alert, Point
 from watchfloor.guardrails.audit import AuditLog
 from watchfloor.load.snowflake_conn import connect
+from watchfloor.logsetup import configure as configure_logging
 
 log = logging.getLogger("detect")
 
@@ -503,9 +504,7 @@ def main() -> None:
     parser.add_argument("--reason", default="", help="reason recorded with --retract-rule")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    for noisy in ("snowflake", "snowflake.connector", "snowflake.connector._core", "urllib3"):
-        logging.getLogger(noisy).setLevel(logging.ERROR)
+    configure_logging("runner")
     audit = None if args.dry_run else AuditLog(get_settings().audit_log_path)
     if args.retract_rule:
         retract(args.retract_rule, args.reason, audit)

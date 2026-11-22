@@ -22,6 +22,7 @@ from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
 from watchfloor.config import get_settings
 from watchfloor.dashboard import data, figures
 from watchfloor.guardrails.audit import AuditLog
+from watchfloor.logsetup import configure as configure_logging
 
 log = logging.getLogger("dashboard")
 
@@ -823,9 +824,7 @@ def create_app() -> Dash:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-    for noisy in ("snowflake", "snowflake.connector", "snowflake.connector._core"):
-        logging.getLogger(noisy).setLevel(logging.ERROR)
+    configure_logging("dashboard")
     create_app().run(debug=False, host="127.0.0.1", port=8050)
 
 

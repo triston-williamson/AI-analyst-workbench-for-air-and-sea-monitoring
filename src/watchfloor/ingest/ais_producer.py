@@ -17,6 +17,7 @@ import websockets
 
 from watchfloor.config import TOPIC_AIS, TOPIC_AIS_STATIC, get_settings
 from watchfloor.ingest.kafka_utils import Publisher, make_producer
+from watchfloor.logsetup import configure as configure_logging
 from watchfloor.models import VesselPosition, VesselStatic, make_record_id
 
 log = logging.getLogger("ais")
@@ -159,7 +160,7 @@ async def stream() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    configure_logging("ais_producer")
     asyncio.run(stream())
 
 
