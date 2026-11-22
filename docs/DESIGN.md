@@ -97,6 +97,7 @@ before it counts as finished work.
 | DET-13 | RENDEZVOUS only between transfer-capable ships (class A, ≥ 50 m, non-passenger) alongside (≤ 0.15 nm); recurring berths suppressed | `tests/test_vessel_types.py`, live run (129 → 7) | Done |
 | DET-14 | Automated retraction never overrides a human review decision | `tests/test_vessel_types.py` | Done |
 | AUD-02 | Audit log stays a single valid chain with several concurrent writers; broken chains are archived and re-anchored, never edited | `tests/test_guardrails.py` | Done |
+| DET-15 | ML scores merchant ships at sea only, with minimum track length and an absolute score floor; at most 5 per pass | `tests/test_phase2_detectors.py` (incl. positive control), live run (43 → 2) | Done |
 | AGT-01 | Agent tools are read-only; the agent cannot change alert or report status | | Planned |
 | AGT-02 | Every factual sentence in a draft cites `[rec:<id>]` | `guardrails.grounding` | Checker done |
 | AGT-03 | Citations must reference records supplied to the agent; invented IDs fail | `tests/test_guardrails.py` | Checker done |
@@ -123,7 +124,7 @@ before it counts as finished work.
 | LOITER | Two-pointer scan: from each anchor point, extend while the track stays within R and reports keep arriving | R = 1 nm, ≥ 3 h | Ships waiting at anchorages outside port limits for a berth |
 | RENDEZVOUS | 10-minute time slots; spatial grid hash finds close pairs per slot (neighbours only, not all pairs); groups of more than 3 slow vessels are dropped as berths/anchorages; consecutive slots form an episode. Only ships capable of a transfer: class A transponder, ≥ 50 m, not passenger, not moored/fishing. Spots where ≥ 4 different vessels pair up over time are dropped as berths. Tanker pairs +0.3, tanker alongside cargo +0.2, both identities unknown −0.2 | ≤ 0.15 nm (alongside), ≤ 3 kts, ≥ 30 min, group ≤ 3 | Legitimate bunkering; berths in inland waters (e.g. Lake Mälaren) |
 | ORBIT | Signed heading change summed over a sliding window, so S-turns cancel and only sustained circling accumulates | ≥ 720° in ≤ 45 min | Airport holding patterns, survey and training flights |
-| ML_ANOMALY | Isolation Forest over 8 kinematic features per track (speed mean/std/max, path length, straightness, turn rate, max report gap, report rate); robust z-scores name the top 3 drivers | top 10, ≥ 98th percentile, ≥ 30 tracks | Harbour craft (tugs, pilots), which move erratically by design |
+| ML_ANOMALY | Isolation Forest over 8 kinematic features per track (speed mean/std/max, path length, straightness, turn rate, max report gap, report rate); robust z-scores name the top 3 drivers. Baseline = merchant ships at sea: same transfer-capable pool as RENDEZVOUS, positions inside port zones dropped | top 5, ≥ 99th percentile **and** raw score ≥ 0.65, tracks ≥ 2 h (aircraft 0.5 h) and ≥ 20 points, ≥ 30 tracks | Naval patrols, research/survey ships, vessels on inland waters (e.g. Lake Mälaren) |
 
 - **Thresholds** live in one dataclass (`detect/runner.py: Thresholds`) so they can be tuned
   without touching detector code.
@@ -155,6 +156,18 @@ before it counts as finished work.
   identified alert is a tanker 0.011 nm (~20 m) from a cargo ship outside Gothenburg, the exact
   alongside pattern (probably routine bunkering, which is the analyst's call). Each rule is pinned
   to the live case that motivated it by a regression test.
+- **Tuning the ML layer on live data (detector v5).** 43 ML alerts were open and every pass
+  added up to 10 more. Profiling them: 23 of 38 vessel alerts were centred inside port zones
+  (ships berthing and turning), 11 were ferries, pilots/tugs/17–40 m craft remained, and a
+  quarter came from tracks under an hour, where every feature is extreme. v5 scores only
+  merchant ships at sea (same pool as RENDEZVOUS, positions in port zones dropped), needs ≥ 2 h
+  and ≥ 20 points per track, and requires an absolute anomaly score as well as a high
+  percentile, so a quiet picture produces nothing rather than its "top k". A positive-control
+  test keeps the exclusion tests honest. **Result: 43 → 2.** The top flag was a vessel
+  self-identifying as "NATO WARSHIP A1411" working a 7.8 nm box at ~10 kn for 2.8 h in the Gulf
+  of Finland (a patrol pattern); the other a research ship. Both genuinely move unlike merchant
+  traffic, and both are benign once an analyst looks, which is the intended division of labour.
+  Names now fall back to position reports for vessels that never send static data.
 - **Idempotency.** Detection re-scans a sliding window. An alert whose rule and track overlap an
   existing alert's time window updates that alert (score, evidence, window) instead of creating a
   duplicate. Only new alerts are written to the audit log.

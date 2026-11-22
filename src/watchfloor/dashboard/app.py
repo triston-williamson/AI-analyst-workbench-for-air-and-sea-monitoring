@@ -113,10 +113,13 @@ def explain(a: dict) -> str:
             f"{x['feature'].replace('_', ' ')} {x['robust_z']:+.1f}σ"
             for x in d.get("top_drivers", [])
         )
-        return (
-            f"Moved unlike the other {d.get('tracks_compared')} tracks{kind} "
-            f"(top {100 * (1 - d.get('percentile', 1)):.1f}%). Main drivers: {drivers}."
+        pct = d.get("percentile", 1)
+        rank = (
+            f"the most unusual of {d.get('tracks_compared')} tracks"
+            if pct >= 0.999
+            else f"in the top {100 * (1 - pct):.1f}% of {d.get('tracks_compared')} tracks"
         )
+        return f"Moved unlike other traffic{kind}: {rank}. Main drivers: {drivers}."
     return ""
 
 

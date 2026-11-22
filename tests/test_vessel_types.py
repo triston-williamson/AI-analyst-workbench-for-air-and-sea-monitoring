@@ -261,3 +261,11 @@ def test_retraction_never_overrides_a_human_decision():
     from watchfloor.detect.runner import RETRACT_SQL
 
     assert "STATUS = 'NEW'" in RETRACT_SQL
+
+
+def test_name_only_identity_is_shown_but_still_counts_as_unknown():
+    """Warships often send no static data; their position reports still carry a name."""
+    a = Alert("RENDEZVOUS", "VESSEL", "211000001|211000002", 0.5, [], start_at=T0, end_at=T0)
+    enrich(a, {"211000001": Identity(None, "NAVAL VESSEL"), "999": Identity(70, "X")})
+    assert a.details["vessel_names"] == ["NAVAL VESSEL", "MMSI 211000002"]
+    assert a.details["identity_unknown"] is True

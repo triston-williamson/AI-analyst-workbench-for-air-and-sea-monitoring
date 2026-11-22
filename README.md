@@ -20,6 +20,11 @@ audit history, then approves or rejects it.*
 *Ship-to-ship detection after tuning on live data (129 alerts → 7): a tanker lies 0.011 nm
 alongside a cargo ship outside Gothenburg. Both tracks converge on the meeting point.*
 
+**Tuned on live data, not guessed.** Each detector was profiled against hours of real Baltic
+traffic and tightened from evidence: ship-meeting alerts 129 → 7, ML alerts 43 → 2 (the top one
+a self-identified naval vessel on a patrol pattern). The whole queue went from 170+ open alerts
+to 16. Every change is pinned by a regression test; see [DESIGN.md §5](docs/DESIGN.md#5-detection-design-phase-2).
+
 ## Why
 
 In the Baltic Sea, AIS gaps and ship-to-ship transfers are linked to sanctions evasion and to
