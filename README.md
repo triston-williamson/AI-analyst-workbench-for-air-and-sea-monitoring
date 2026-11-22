@@ -25,6 +25,13 @@ alongside a cargo ship outside Gothenburg. Both tracks converge on the meeting p
 *Loitering is ranked by what lies underneath: a vessel stopped 0.058 nm from the Baltic 1
 export cable is raised first. Anchor dragging damaged Baltic cables and pipelines in 2023–24.*
 
+![AI analyst report in the console: a patrol-pattern track on the map, and a report that passed the grounding check with compact citations](docs/images/console-ai-report.jpg)
+
+*The AI analyst (Claude) investigated an ML alert with read-only tools and drafted a cited
+report: a self-identified naval vessel on a patrol pattern, 4.4 nm from Balticconnector, no
+partner vessel, identity unverified. Every factual sentence cites a sensor record; the
+reviewer still decides.*
+
 **Tuned on live data, not guessed.** Each detector was profiled against hours of real Baltic
 traffic and tightened from evidence: ship meetings 129 → 7, ML anomalies 43 → 2 (the top one a
 self-identified naval vessel on a patrol pattern), loitering 163 → 26 with ships near seabed
@@ -62,7 +69,7 @@ aisstream (AIS) ─┘     └─► dead-letter (rejected input) └─► Dash
 |---|---|---|
 | 1 | Kafka ingest (ADS-B + AIS), Snowflake sink, live map | ✅ built |
 | 2 | Detection: AIS gaps, loitering, ship-to-ship rendezvous, aircraft orbits, ML anomaly scoring, vessel-type context, alerts on map | ✅ built |
-| 3 | Analyst agent, OFAC sanctions screening, grounding loop | 📋 |
+| 3 | AI analyst agent (Claude): read-only tools, OFAC sanctions screening, cited reports with a grounding retry loop, shown in the console for approval | ✅ built |
 | 4 | Operator console: alert queue, evidence trails, approve/reject with audit, replay, heatmaps, system health | ✅ built (metrics page 📋) |
 
 Requirements and how each is verified are listed in [DESIGN.md §4](docs/DESIGN.md#4-requirements-and-traceability).
@@ -116,6 +123,15 @@ python -m watchfloor.detect.runner          # detectors every 5 min -> OPS.ALERT
 python -m watchfloor.dashboard.app          # http://127.0.0.1:8050
 ```
 
+Draft AI analyst reports (needs `ANTHROPIC_API_KEY` in `.env`; each report is a few Claude
+API calls), or use the **Draft AI report** button on any alert in the console:
+
+```powershell
+python scripts/fetch_sanctions.py                    # once: OFAC SDN list for sanctions checks
+python -m watchfloor.agent.analyst --top 3           # top 3 open alerts without a report
+python -m watchfloor.agent.analyst --top 1 --dry-run # print only
+```
+
 Try the detectors without writing anything: `python -m watchfloor.detect.runner --once --dry-run`.
 Rules such as loitering (3 h) and going dark (2 h) need a few hours of collected data to fire.
 
@@ -139,7 +155,7 @@ src/watchfloor/
   load/        Kafka -> Snowflake sink, connection, one-time setup
   sql/         Snowflake DDL and versioned migrations (RAW / CORE / OPS schemas)
   detect/      rules (gap, loiter, rendezvous, orbit), ML scoring, port zones, runner
-  agent/       LLM analyst (Phase 3)
+  agent/       AI analyst agent: tools, OFAC sanctions screening, investigation loop
   guardrails/  hash-chained audit log, citation grounding checker
   dashboard/   operator console: app (layout/callbacks), data (queries), figures (map drawing)
 docs/DESIGN.md requirements, architecture, Responsible AI mapping, risks

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
@@ -329,6 +331,7 @@ def build_layout() -> html.Div:
             dcc.Store(id="selected-track"),
             dcc.Store(id="trail-data"),
             dcc.Store(id="detail-key"),
+            dcc.Store(id="report-tick", data=0),
             dcc.Store(id="zoom", data=figures.DEFAULT_ZOOM),
             dcc.Store(id="review-tick", data={"n": 0, "msg": ""}),
             dcc.Store(id="replay-bounds"),
@@ -627,10 +630,11 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         Input("selected-alert", "data"),
         Input("selected-track", "data"),
         Input("alerts-data", "data"),
+        Input("report-tick", "data"),
         State("review-tick", "data"),
         State("detail-key", "data"),
     )
-    def render_detail(alert_id, track_sel, alerts, review, shown_key):
+    def render_detail(alert_id, track_sel, alerts, _report_tick, review, shown_key):
         if track_sel and not alert_id:
             key = f"track:{track_sel['id']}"
             if key == shown_key:
@@ -648,9 +652,43 @@ def register(app: Dash) -> None:  # noqa: C901 - one place to read every interac
         # The 30 s refresh must not re-render an open panel (it would wipe a half-typed
         # note). Only re-render when the selection or the alert's review state changes.
         key = detail_key(a)
-        if key == shown_key:
+        if key == shown_key and ctx.triggered_id != "report-tick":
             return no_update, no_update
         return alert_detail(a, review), key
+
+    @app.callback(
+        Output("report-tick", "data"),
+        Output("draft-status", "children"),
+        Input("draft-report", "n_clicks"),
+        State("selected-alert", "data"),
+        State("alerts-data", "data"),
+        State("report-tick", "data"),
+        prevent_initial_call=True,
+    )
+    def draft_report(n_clicks, alert_id, alerts, tick):
+        if not n_clicks or not alert_id:
+            return no_update, no_update
+        if not agent_configured():
+            return (
+                no_update,
+                "Sign in with `ant auth login` (or set ANTHROPIC_API_KEY) to use the AI analyst.",
+            )
+        a = next((x for x in alerts or [] if x["ALERT_ID"] == alert_id), None)
+        if a is None:
+            return no_update, "Alert not found."
+        from watchfloor.agent import analyst
+
+        try:
+            draft = analyst.investigate(
+                a, analyst.make_client(), data.run_query, AuditLog(get_settings().audit_log_path)
+            )
+        except Exception as exc:  # noqa: BLE001 - surface API/data errors to the analyst
+            log.exception("analyst agent failed")
+            return no_update, f"Agent failed: {str(exc)[:200]}"
+        if not draft.markdown:
+            return no_update, f"No report produced (stop reason: {draft.stop_reason})."
+        analyst.save_report(data.execute, draft)
+        return (tick or 0) + 1, ""
 
     @app.callback(
         Output("review-tick", "data"),
@@ -815,12 +853,87 @@ def alert_detail(a: dict, review: dict | None) -> list:
         ),
         html.Div(reviewed, className="msg"),
         html.H4("AI analyst report"),
-        html.Div(
-            "Phase 3: an LLM analyst will draft an assessment here, with every claim cited to the "
-            "evidence records above and checked by the grounding guardrail before it reaches you.",
-            className="agent",
-        ),
+        report_section(a),
     ]
+
+
+CITATION_DISPLAY = re.compile(r"\[(rec|alert|sdn):([A-Za-z0-9-]{1,64})\]")
+
+
+def compact_citations(markdown: str) -> str:
+    """Show citations as short code tags (first 8 chars) on screen; the stored report keeps
+    full IDs for the audit trail."""
+    return CITATION_DISPLAY.sub(lambda m: f" `{m.group(1)}:{m.group(2)[:8]}`", markdown)
+
+
+def agent_configured() -> bool:
+    """True if the Claude SDK can find credentials: a key in .env or the environment, or an
+    `ant auth login` sign-in (preferred: no key stored anywhere)."""
+    if get_settings().anthropic_api_key.get_secret_value() or os.environ.get("ANTHROPIC_API_KEY"):
+        return True
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic()
+        return bool(client.api_key or getattr(client, "credentials", None))
+    except Exception:  # noqa: BLE001 - any failure here just means "not configured"
+        return False
+
+
+def report_section(a: dict) -> html.Div:
+    try:
+        rep = data.latest_report(a["ALERT_ID"])
+    except Exception:  # noqa: BLE001
+        log.exception("report query failed")
+        rep = None
+    button = html.Button(
+        "Redraft AI report" if rep else "Draft AI report",
+        id="draft-report",
+        className="btn ghost",
+        title="Runs the Claude analyst agent on this alert (uses the Claude API).",
+    )
+    status = dcc.Loading(html.Div(id="draft-status", className="msg"), type="dot")
+    if rep is None:
+        note = (
+            "No report yet. The analyst agent investigates with read-only tools and drafts a "
+            "cited assessment; you still make the decision."
+            if agent_configured()
+            else "Sign in with `ant auth login` (or set ANTHROPIC_API_KEY) to enable the analyst."
+        )
+        return html.Div([html.Div(note, className="agent"), button, status])
+    passed = bool(rep["GROUNDING_PASSED"])
+    badge = html.Span(
+        f"Grounding {'PASSED' if passed else 'FAILED'} {rep['GROUNDING_SCORE']:.2f}",
+        className=f"badge {'APPROVED' if passed else 'REJECTED'}",
+        title="Share of factual sentences that cite evidence the agent was actually given",
+    )
+    meta = (
+        f"{rep['MODEL']} · {int(rep['TOOL_CALLS'] or 0)} tool calls · "
+        f"{int(rep['INPUT_TOKENS'] or 0):,} in / {int(rep['OUTPUT_TOKENS'] or 0):,} out tokens · "
+        f"{dtg(rep['DRAFTED_AT'])}"
+    )
+    problems = []
+    if not passed:
+        problems = [
+            html.Div("Failed the grounding check; read with care:", className="why"),
+            *[html.Div(f"Uncited: {s}", className="audit") for s in rep["UNCITED"][:5]],
+            *[
+                html.Div(f"Unknown citation: {c}", className="audit")
+                for c in rep["UNKNOWN_CITATIONS"][:5]
+            ],
+        ]
+    return html.Div(
+        [
+            html.Div([badge, html.Span(f"  {meta}", className="audit")]),
+            *problems,
+            dcc.Markdown(compact_citations(rep["DRAFT_MARKDOWN"] or ""), className="report"),
+            html.Div(
+                "AI-drafted. Not final until an analyst approves the alert.", className="audit"
+            ),
+            button,
+            status,
+        ]
+    )
 
 
 def create_app() -> Dash:

@@ -260,3 +260,12 @@ def test_audit_history_filters_by_alert(tmp_path):
     hist = audit_history("a1", str(path))
     assert [e["action"] for e in hist] == ["alert_created", "reject"]
     assert hist[1]["details"]["note"] == "pilot station"
+
+
+def test_citations_are_compacted_for_display_only():
+    from watchfloor.dashboard.app import compact_citations
+
+    text = "Held station [rec:3d5af079c5fda3a6460fea090fff27bc][alert:e5f7456c-0065-541c]."
+    out = compact_citations(text)
+    assert "`rec:3d5af079`" in out and "`alert:e5f7456c`" in out
+    assert "3d5af079c5fda3a6" not in out

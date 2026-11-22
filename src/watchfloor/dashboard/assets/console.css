@@ -108,3 +108,11 @@ details pre { white-space: pre-wrap; word-break: break-all; font-size: 10px; col
 .controls label, .filters label { color: var(--text); white-space: nowrap; }
 .controls input, .filters input { accent-color: var(--accent); margin-right: 4px; }
 .filters .dash-checklist, .filters .dash-radioitems { margin-bottom: 4px; }
+
+/* AI analyst report */
+.report { background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px;
+  padding: 4px 10px; margin: 6px 0; line-height: 1.45; }
+.report h2 { font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted);
+  margin: 10px 0 4px; }
+.report ul { padding-left: 18px; margin: 4px 0; }
+.report p { margin: 4px 0; }
